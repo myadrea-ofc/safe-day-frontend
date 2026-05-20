@@ -1,4 +1,3 @@
-import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:safety_apps/models/daily_plan.dart';
@@ -21,7 +20,7 @@ Future<DailyPlan?> showDailyPlanDialog(
   );
   final isSubmitting = ValueNotifier<bool>(false);
 
-  File? imageFile;
+  XFile? imageFile;
 
   bool isForAllSites = false;
   List<int> selectedSiteIds = [];
@@ -147,7 +146,7 @@ Future<DailyPlan?> showDailyPlanDialog(
                                 ),
                                 Switch(
                                   value: isForAllSites,
-                                  activeColor: const Color(0xff1d63ff),
+                                  activeThumbColor: const Color(0xff1d63ff),
                                   onChanged: (val) {
                                     setState(() {
                                       isForAllSites = val;
@@ -235,8 +234,9 @@ Future<DailyPlan?> showDailyPlanDialog(
                             final picked = await ImagePicker().pickImage(
                               source: ImageSource.gallery,
                             );
+
                             if (picked != null) {
-                              imageFile = File(picked.path);
+                              imageFile = picked;
                               imgCtrl.text = picked.name;
                               setState(() {});
                             }

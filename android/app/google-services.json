@@ -1,13 +1,13 @@
 {
   "project_info": {
-    "project_number": "878482414034",
-    "project_id": "safe-day-a6057",
-    "storage_bucket": "safe-day-a6057.firebasestorage.app"
+    "project_number": "183172446233",
+    "project_id": "safety-apps-1717",
+    "storage_bucket": "safety-apps-1717.firebasestorage.app"
   },
   "client": [
     {
       "client_info": {
-        "mobilesdk_app_id": "1:878482414034:android:ebd2fda8789e89eec5500b",
+        "mobilesdk_app_id": "1:183172446233:android:922bdb1200014f794a1288",
         "android_client_info": {
           "package_name": "com.safety_apps"
         }
@@ -15,7 +15,7 @@
       "oauth_client": [],
       "api_key": [
         {
-          "current_key": "AIzaSyDLu0sIxQ8KnvEUBSRwSXTBSA45gvgsung"
+          "current_key": "AIzaSyCPAWEZ05EvLcJ-g36jrtrZbnTukMMgrl0"
         }
       ],
       "services": {

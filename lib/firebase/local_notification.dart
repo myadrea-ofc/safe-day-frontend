@@ -1,8 +1,8 @@
 import 'dart:convert';
 
+import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-import 'package:firebase_messaging/firebase_messaging.dart';
 
 class LocalNotificationService {
   static final FlutterLocalNotificationsPlugin _plugin =
@@ -10,7 +10,6 @@ class LocalNotificationService {
 
   static bool _initialized = false;
 
-  // callback untuk handle tap notif lokal
   static void Function(Map<String, dynamic> data)? onNotificationTap;
 
   static const AndroidNotificationChannel channel = AndroidNotificationChannel(
@@ -25,7 +24,12 @@ class LocalNotificationService {
     _initialized = true;
 
     const androidInit = AndroidInitializationSettings('@mipmap/ic_launcher');
-    const initSettings = InitializationSettings(android: androidInit);
+    const iosInit = DarwinInitializationSettings();
+
+    const initSettings = InitializationSettings(
+      android: androidInit,
+      iOS: iosInit,
+    );
 
     await _plugin.initialize(
       initSettings,
@@ -36,7 +40,7 @@ class LocalNotificationService {
         if (payload == null || payload.isEmpty) return;
 
         try {
-          final data = jsonDecode(payload) as Map<String, dynamic>;
+          final data = (jsonDecode(payload) as Map).cast<String, dynamic>();
           onNotificationTap?.call(data);
         } catch (e) {
           debugPrint("❌ Failed to parse payload JSON: $e");
@@ -50,24 +54,39 @@ class LocalNotificationService {
         >();
 
     await androidPlugin?.createNotificationChannel(channel);
-
-    // ✅ Android 13+ runtime permission
     await androidPlugin?.requestNotificationsPermission();
   }
 
-  static Future<void> show(RemoteMessage message) async {
-    // ✅ allow data-only di masa depan
-    final title =
-        message.notification?.title ?? message.data['title']?.toString();
-    final body = message.notification?.body ?? message.data['body']?.toString();
+  static String? extractTitle(RemoteMessage message) {
+    return message.notification?.title ?? message.data['title']?.toString();
+  }
 
-    // kalau bener-bener kosong, skip
+  static String? extractBody(RemoteMessage message) {
+    return message.notification?.body ?? message.data['body']?.toString();
+  }
+
+  static bool hasDisplayContent(RemoteMessage message) {
+    final title = extractTitle(message);
+    final body = extractBody(message);
+
+    return (title != null && title.isNotEmpty) ||
+        (body != null && body.isNotEmpty);
+  }
+
+  static bool isNotificationPayload(RemoteMessage message) {
+    return message.notification != null;
+  }
+
+  static Future<void> show(RemoteMessage message) async {
+    final title = extractTitle(message);
+    final body = extractBody(message);
+
     if ((title == null || title.isEmpty) && (body == null || body.isEmpty)) {
+      debugPrint("⏭ Skip local notif: title/body kosong");
       return;
     }
 
-    // ✅ notifId lebih aman daripada hashCode yang bisa berubah
-    final notifId = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+    final notifId = DateTime.now().millisecondsSinceEpoch.remainder(100000);
 
     await _plugin.show(
       notifId,
@@ -82,6 +101,7 @@ class LocalNotificationService {
           priority: Priority.high,
           playSound: true,
         ),
+        iOS: const DarwinNotificationDetails(),
       ),
       payload: jsonEncode(message.data),
     );

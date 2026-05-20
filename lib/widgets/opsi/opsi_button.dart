@@ -14,23 +14,35 @@ class OpsiButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return InkWell(
-      onTap: onTap,
-      child: Container(
-        padding: EdgeInsets.symmetric(vertical: 14),
-        decoration: BoxDecoration(
-          color: active ? Colors.blueAccent : Colors.grey.shade300,
-          borderRadius: BorderRadius.circular(8),
-        ),
-        alignment: Alignment.center,
-        child: Text(
-          text,
-          textAlign: TextAlign.center,
-          softWrap: true,
-          style: TextStyle(
-            fontSize: 14,
-            color: active ? Colors.white : Colors.black87,
-            fontWeight: FontWeight.w600,
+    final borderRadius = BorderRadius.circular(16);
+
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: borderRadius,
+        onTap: onTap,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 180),
+          curve: Curves.easeOut,
+          padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 12),
+          decoration: BoxDecoration(
+            color: active ? const Color(0xFFEFF6FF) : const Color(0xFFF8FAFC),
+            borderRadius: borderRadius,
+            border: Border.all(
+              color: active ? const Color(0xFF2563EB) : const Color(0xFFE5E7EB),
+              width: active ? 1.2 : 1,
+            ),
+          ),
+          alignment: Alignment.center,
+          child: Text(
+            text,
+            textAlign: TextAlign.center,
+            softWrap: true,
+            style: TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.w600,
+              color: active ? const Color(0xFF1D4ED8) : const Color(0xFF374151),
+            ),
           ),
         ),
       ),

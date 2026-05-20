@@ -1,4 +1,7 @@
 import 'dart:convert';
+import 'dart:typed_data';
+
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:http_parser/http_parser.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -25,8 +28,14 @@ class LPIService {
     required String klasifikasiInsiden,
     required String kronologi,
     required String statusLokasi,
+
     String? filePath,
     List<String>? fotoPaths,
+
+    Uint8List? fileBytes,
+    String? fileName,
+    List<Uint8List>? fotoBytesList,
+    List<String>? fotoNames,
   }) async {
     final token = await _storage.read(key: "jwt_token");
     final deviceId = await _storage.read(key: "device_id");
@@ -36,6 +45,7 @@ class LPIService {
     }
 
     final request = http.MultipartRequest("POST", Uri.parse(baseUrl));
+
     request.headers.addAll({
       "Authorization": "Bearer $token",
       "x-device-id": deviceId,
@@ -60,30 +70,72 @@ class LPIService {
       "status_lokasi": statusLokasi,
     });
 
-    if (filePath != null && filePath.isNotEmpty) {
-      request.files.add(
-        await http.MultipartFile.fromPath(
-          "file",
-          filePath,
-          contentType: MediaType("application", "octet-stream"),
-        ),
-      );
-    }
-
-    if (fotoPaths != null && fotoPaths.isNotEmpty) {
-      for (final path in fotoPaths) {
+    if (kIsWeb) {
+      if (fileBytes != null && fileBytes.isNotEmpty) {
+        request.files.add(
+          http.MultipartFile.fromBytes(
+            "file",
+            fileBytes,
+            filename: fileName ?? "dokumen",
+            contentType: MediaType("application", "octet-stream"),
+          ),
+        );
+      }
+    } else {
+      if (filePath != null && filePath.isNotEmpty) {
         request.files.add(
           await http.MultipartFile.fromPath(
-            "foto",
-            path,
-            contentType: MediaType("image", "jpeg"),
+            "file",
+            filePath,
+            contentType: MediaType("application", "octet-stream"),
           ),
         );
       }
     }
 
+    if (kIsWeb) {
+      if (fotoBytesList != null && fotoBytesList.isNotEmpty) {
+        for (int i = 0; i < fotoBytesList.length; i++) {
+          final bytes = fotoBytesList[i];
+
+          if (bytes.isEmpty) continue;
+
+          request.files.add(
+            http.MultipartFile.fromBytes(
+              "foto",
+              bytes,
+              filename: fotoNames != null && i < fotoNames.length
+                  ? fotoNames[i]
+                  : "foto_$i.jpg",
+              contentType: MediaType("image", "jpeg"),
+            ),
+          );
+        }
+      }
+    } else {
+      if (fotoPaths != null && fotoPaths.isNotEmpty) {
+        for (final path in fotoPaths) {
+          if (path.isEmpty) continue;
+
+          request.files.add(
+            await http.MultipartFile.fromPath(
+              "foto",
+              path,
+              contentType: MediaType("image", "jpeg"),
+            ),
+          );
+        }
+      }
+    }
+
     final response = await request.send();
-    return response.statusCode == 200;
+
+    final responseBody = await response.stream.bytesToString();
+
+    debugPrint("SUBMIT LPI STATUS: ${response.statusCode}");
+    debugPrint("SUBMIT LPI RESPONSE: $responseBody");
+
+    return response.statusCode == 200 || response.statusCode == 201;
   }
 
   static Future<List<LPIModel>> fetchLPI() async {

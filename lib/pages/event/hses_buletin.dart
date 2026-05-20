@@ -382,7 +382,10 @@ class _HSESBuletinPageState extends State<HSESBuletinPage> {
                             );
 
                             if (edited != null && mounted) {
-                              _loadData();
+                              await _loadData();
+
+                              if (!mounted) return;
+
                               showAutoInfoDialog(
                                 context,
                                 title: "Berhasil",
@@ -397,7 +400,10 @@ class _HSESBuletinPageState extends State<HSESBuletinPage> {
                               buletin.id,
                             );
                             if (success && mounted) {
-                              _loadData();
+                              await _loadData();
+
+                              if (!mounted) return;
+
                               showAutoInfoDialog(
                                 context,
                                 title: "Berhasil",
@@ -436,7 +442,10 @@ class _HSESBuletinPageState extends State<HSESBuletinPage> {
                 );
 
                 if (result != null && mounted) {
-                  _loadData();
+                  await _loadData();
+
+                  if (!mounted) return;
+
                   showAutoInfoDialog(
                     context,
                     title: "Berhasil",

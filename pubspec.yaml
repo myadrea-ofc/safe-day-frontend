@@ -9,45 +9,47 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  intl: ^0.19.0
-  device_info_plus: ^10.1.0
+  intl: ^0.20.2
+  device_info_plus: ^12.4.0
 
 
   cupertino_icons: ^1.0.8
-  getwidget: ^4.0.0
-  fl_chart: ^0.65.0
+  getwidget: ^7.0.0
+  fl_chart: ^1.2.0
   image_picker: ^1.0.4
-  file_picker: ^10.3.7
   http: ^1.2.0
   dio: ^5.4.0
   flutter_neumorphic: ^3.2.0
-  google_fonts: ^6.1.0
-  flutter_secure_storage: ^8.0.0
+  google_fonts: ^8.0.2
+  flutter_secure_storage: ^10.0.0
   path_provider: ^2.1.2
-  share_plus: ^10.0.2
+  share_plus: ^10.1.4
   open_file: ^3.3.2
   data_table_2: ^2.5.15
-  permission_handler: ^11.3.0
-  dropdown_search: ^6.0.3
+  permission_handler: ^12.0.1
   flutter_image_compress: ^2.3.0
   path: ^1.9.0
   url_launcher: ^6.3.0
   uuid: ^4.4.0
   connectivity_plus: ^6.0.5
   internet_connection_checker: ^3.0.1
-  firebase_core: ^2.24.2
-  firebase_messaging: ^14.7.10
-  flutter_local_notifications: ^17.0.0
+  firebase_core: ^4.7.0
+  firebase_messaging: ^16.2.0
   media_scanner: ^2.1.0
-  android_id: ^0.4.0
+  android_id: ^0.5.1
   excel: ^4.0.2
-
+  hive: ^2.2.3
+  hive_flutter: ^1.1.0
+  flutter_local_notifications: ^17.2.4
+  file_picker: 9.2.3
+  dropdown_search: ^5.0.6
+  shared_preferences: ^2.3.3
   
 dev_dependencies:
   flutter_test:
     sdk: flutter
 
-  flutter_launcher_icons: ^0.13.1
+  flutter_launcher_icons: ^0.14.4
 
 flutter_icons:
   android: true

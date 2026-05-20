@@ -1,49 +1,125 @@
 import 'package:data_table_2/data_table_2.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:intl/intl.dart';
 import 'package:safety_apps/models/events/daily_plan_review.dart';
+import 'package:safety_apps/models/result/excel_access.dart';
+import 'package:safety_apps/pages/excel_access.dart';
 import 'package:safety_apps/service/event/daily_plan_service.dart';
+import 'package:safety_apps/service/export_excel/export_type.dart';
+import 'package:safety_apps/session/auth_session.dart';
+import 'package:safety_apps/widgets/result/app_bar.dart';
+import 'package:safety_apps/widgets/result/confirm_delete_excel_access.dart';
+import 'package:safety_apps/widgets/result/date_filter_bar.dart';
+import 'package:safety_apps/widgets/result/date_filter_modal.dart';
+import 'package:safety_apps/widgets/result/date_preset.dart';
+import 'package:safety_apps/widgets/result/empty_row.dart';
+import 'package:safety_apps/widgets/result/excel_access_bottom_sheet.dart';
+import 'package:safety_apps/widgets/result/excel_access_panel.dart';
+import 'package:safety_apps/widgets/result/excel_access_row.dart';
+import 'package:safety_apps/widgets/result/export/export_excel_helper.dart';
+import 'package:safety_apps/widgets/result/load_excel_access.dart';
+import 'package:safety_apps/widgets/result/mark_excel_access_seen.dart';
+import 'package:safety_apps/widgets/result/no_excel_access_dialog.dart';
+import 'package:safety_apps/widgets/result/page_style.dart';
+import 'package:safety_apps/widgets/result/pagination.dart';
+import 'package:safety_apps/widgets/result/pick_custom_range.dart';
+import 'package:safety_apps/widgets/result/premium_cells.dart';
+import 'package:safety_apps/widgets/result/result_table.dart';
+import 'package:safety_apps/widgets/result/search_box.dart';
+import 'package:safety_apps/widgets/result/table_helpers.dart';
+import 'package:safety_apps/widgets/result/toggle_excel_access.dart';
 
 class DailyPlanResultPage extends StatefulWidget {
+  const DailyPlanResultPage({super.key});
+
   @override
   State<DailyPlanResultPage> createState() => _DailyPlanResultPageState();
 }
 
-class _DailyPlanResultPageState extends State<DailyPlanResultPage> {
+class _DailyPlanResultPageState extends State<DailyPlanResultPage>
+    with SingleTickerProviderStateMixin {
   List<DailyPlanReview> allData = [];
   List<DailyPlanReview> filtered = [];
+  List<ExcelAccess> _accessList = [];
+
+  late AnimationController _pulseController;
+  late Animation<double> _pulseAnimation;
 
   int rowsPerPage = 10;
   int currentPage = 0;
-  bool loading = true;
-
-  // ====== THEME (samakan feel hazard/buletin) ======
-  static const Color _bg = Color(0xffeef2f7);
-  static const Color _surface = Colors.white;
-
-  // pakai nuansa dailyplan (tetap green-purple seperti sebelumnya, tapi premium)
-  static const Color _primary = Color(0xffA855F7); // purple-ish
-  static const Color _secondary = Color(0xff34D399); // green-ish
-
-  static const int _columnCount = 10;
+  int _unseenAddedBySuperadmin = 0;
 
   final TextEditingController _searchCtrl = TextEditingController();
   bool get _hasQuery => _searchCtrl.text.trim().isNotEmpty;
 
-  final LinearGradient primaryGradient = const LinearGradient(
-    colors: [_secondary, _primary],
-    begin: Alignment.topLeft,
-    end: Alignment.bottomRight,
-  );
+  bool loading = true;
+  bool _exporting = false;
+  bool _loadingAccess = false;
+
+  String get _role => AuthSession.role ?? "member";
+  int get _currentSiteId => AuthSession.siteId ?? 0;
+  bool get _isAdminOrSuperadmin => _role == 'admin' || _role == 'superadmin';
+
+  DatePreset _datePreset = DatePreset.all;
+  DateTimeRange? _customRange;
+
+  DateTimeRange? _presetRange(DatePreset p) {
+    final now = DateTime.now();
+    DateTime startOfDay(DateTime d) => DateTime(d.year, d.month, d.day);
+
+    if (p == DatePreset.all) return null;
+
+    if (p == DatePreset.today) {
+      final start = startOfDay(now);
+      final end = start.add(const Duration(days: 1));
+      return DateTimeRange(start: start, end: end);
+    }
+
+    if (p == DatePreset.week) {
+      final today = startOfDay(now);
+      final start = today.subtract(Duration(days: today.weekday - 1));
+      final end = start.add(const Duration(days: 7));
+      return DateTimeRange(start: start, end: end);
+    }
+
+    if (p == DatePreset.month) {
+      final start = DateTime(now.year, now.month, 1);
+      final end = (now.month == 12)
+          ? DateTime(now.year + 1, 1, 1)
+          : DateTime(now.year, now.month + 1, 1);
+      return DateTimeRange(start: start, end: end);
+    }
+
+    return _customRange;
+  }
 
   @override
   void initState() {
     super.initState();
+    _searchCtrl.addListener(() => setState(() {}));
     loadData();
+    _loadExcelAccess().then(
+      (_) => markExcelAccessSeen(
+        role: _role,
+        feature: "daily_plan",
+        onReloadAccess: _loadExcelAccess,
+      ),
+    );
+
+    _pulseController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 900),
+    )..repeat(reverse: true);
+
+    _pulseAnimation = Tween<double>(begin: 0.95, end: 1.15).animate(
+      CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut),
+    );
   }
 
   @override
   void dispose() {
+    _pulseController.dispose();
     _searchCtrl.dispose();
     super.dispose();
   }
@@ -73,27 +149,40 @@ class _DailyPlanResultPageState extends State<DailyPlanResultPage> {
     }
   }
 
-  // ====== SEARCH (hazard-style: contains + ranking, tanpa ubah data/label) ======
-  List<DailyPlanReview> _searchResults(String v) {
-    final q = v.toLowerCase().trim();
+  List<DailyPlanReview> _applySearchAndDate() {
+    final searched = _searchResults(_searchCtrl.text);
+    final range = _presetRange(_datePreset);
+    if (range == null) return searched;
+
+    return searched.where((e) {
+      final dt = e.createdAt;
+      return !dt.isBefore(range.start) && dt.isBefore(range.end);
+    }).toList();
+  }
+
+  List<ExcelAccess> get _sortedAccessNewest {
+    final list = List<ExcelAccess>.from(
+      _accessList.where((a) => a.feature == "daily_plan"),
+    );
+    list.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    return list;
+  }
+
+  List<DailyPlanReview> _searchResults(String value) {
+    final q = value.toLowerCase().trim();
+
     String safeLower(String? s) => (s ?? "").toLowerCase().trim();
 
     if (q.isEmpty) return List<DailyPlanReview>.from(allData);
 
     final results = allData.where((e) {
-      final comment = safeLower(e.comment);
-      final userName = safeLower(e.userName);
-      final departmentName = safeLower(e.departmentName);
-      final siteName = safeLower(e.siteName);
+      final reviewerName = safeLower(e.userName);
       final dailyPlanTitle = safeLower(e.dailyPlanTitle);
-      final reviewerRole = safeLower(e.reviewerRole);
+      final departmentName = safeLower(e.departmentName);
 
-      return comment.contains(q) ||
-          userName.contains(q) ||
-          departmentName.contains(q) ||
-          siteName.contains(q) ||
+      return reviewerName.contains(q) ||
           dailyPlanTitle.contains(q) ||
-          reviewerRole.contains(q);
+          departmentName.contains(q);
     }).toList();
 
     int rankText(String text) {
@@ -109,32 +198,33 @@ class _DailyPlanResultPageState extends State<DailyPlanResultPage> {
     }
 
     int rankRow(DailyPlanReview e) {
-      final fields = <String>[
-        safeLower(e.userName),
-        safeLower(e.comment),
-        safeLower(e.departmentName),
-        safeLower(e.siteName),
-        safeLower(e.dailyPlanTitle),
-        safeLower(e.reviewerRole),
-      ];
-      return fields.map(rankText).reduce((a, b) => a < b ? a : b);
+      final reviewerName = safeLower(e.userName);
+      final dailyPlanTitle = safeLower(e.dailyPlanTitle);
+      final departmentName = safeLower(e.departmentName);
+
+      return [
+        rankText(reviewerName),
+        rankText(dailyPlanTitle),
+        rankText(departmentName),
+      ].reduce((a, b) => a < b ? a : b);
     }
 
     int firstIndexRow(DailyPlanReview e) {
-      final fields = <String>[
-        safeLower(e.userName),
-        safeLower(e.comment),
-        safeLower(e.departmentName),
-        safeLower(e.siteName),
-        safeLower(e.dailyPlanTitle),
-        safeLower(e.reviewerRole),
-      ];
+      final reviewerName = safeLower(e.userName);
+      final dailyPlanTitle = safeLower(e.dailyPlanTitle);
+      final departmentName = safeLower(e.departmentName);
+
+      int idx(String s) => s.indexOf(q);
+
+      final inReviewer = idx(reviewerName);
+      final inTitle = idx(dailyPlanTitle);
+      final inDepartment = idx(departmentName);
 
       int best = 1 << 30;
-      for (final f in fields) {
-        final idx = f.indexOf(q);
-        if (idx >= 0) best = idx < best ? idx : best;
-      }
+      if (inReviewer >= 0) best = inReviewer < best ? inReviewer : best;
+      if (inTitle >= 0) best = inTitle < best ? inTitle : best;
+      if (inDepartment >= 0) best = inDepartment < best ? inDepartment : best;
+
       return best == (1 << 30) ? (1 << 29) : best;
     }
 
@@ -153,16 +243,27 @@ class _DailyPlanResultPageState extends State<DailyPlanResultPage> {
     return results;
   }
 
+  List<DailyPlanReview> get pageData {
+    final start = currentPage * rowsPerPage;
+    final end = (start + rowsPerPage).clamp(0, filtered.length);
+    return filtered.sublist(start, end);
+  }
+
   void onSearch(String v) {
     setState(() {
-      filtered = _searchResults(v);
+      filtered = _applySearchAndDate();
       currentPage = 0;
       _ensurePageValid();
     });
   }
 
-  int get _totalPage =>
-      (filtered.length / rowsPerPage).ceil().clamp(1, 1 << 30);
+  void _refreshFiltered() {
+    setState(() {
+      filtered = _applySearchAndDate();
+      currentPage = 0;
+      _ensurePageValid();
+    });
+  }
 
   void _ensurePageValid() {
     final tp = _totalPage;
@@ -170,704 +271,424 @@ class _DailyPlanResultPageState extends State<DailyPlanResultPage> {
     if (currentPage < 0) currentPage = 0;
   }
 
-  List<DailyPlanReview> get pageData {
-    final start = currentPage * rowsPerPage;
-    final end = (start + rowsPerPage).clamp(0, filtered.length);
-    return filtered.sublist(start, end);
+  int get _totalPage =>
+      (filtered.length / rowsPerPage).ceil().clamp(1, 1 << 30);
+
+  Future<void> _loadExcelAccess() async {
+    setState(() => _loadingAccess = true);
+    try {
+      final result = await loadExcelAccess(
+        role: _role,
+        currentSiteId: _currentSiteId,
+        feature: "daily_plan",
+      );
+
+      setState(() {
+        _accessList = result.accessList;
+        _unseenAddedBySuperadmin = result.unseenAddedBySuperadmin;
+      });
+    } finally {
+      if (mounted) setState(() => _loadingAccess = false);
+    }
+  }
+
+  Future<void> _toggleAccess(ExcelAccess a, bool v) async {
+    await toggleExcelAccess(
+      context: context,
+      feature: "daily_plan",
+      role: _role,
+      currentSiteId: _currentSiteId,
+      access: a,
+      value: v,
+      onOptimisticChange: () {
+        setState(() => a.canDownload = v);
+      },
+      onRollback: () {
+        setState(() => a.canDownload = !v);
+      },
+      onRoleChanged: logoutAndRedirect,
+    );
+  }
+
+  Future<void> logoutAndRedirect() async {
+    const storage = FlutterSecureStorage();
+    await storage.delete(key: "jwt_token");
+
+    if (!mounted) return;
+    Navigator.of(context).pushNamedAndRemoveUntil("/login", (route) => false);
+  }
+
+  bool get _canCurrentUserDownloadExcel {
+    if (AuthSession.role == "superadmin") return true;
+    if (AuthSession.role == "admin") return true;
+
+    return _accessList.any(
+      (a) =>
+          a.userId == AuthSession.userId &&
+          a.siteId == AuthSession.siteId &&
+          a.feature == "daily_plan" &&
+          a.canDownload == true,
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: _bg,
-      appBar: _appBar(),
+      backgroundColor: ResultPageStyle.bg,
+      appBar: ResultAppBar(
+        title: "Daily Plan Results",
+        total: filtered.length,
+        onBack: () => Navigator.maybePop(context),
+      ),
       body: loading
           ? const Center(child: CircularProgressIndicator())
-          : Padding(
-              padding: const EdgeInsets.all(18),
-              child: Column(
-                children: [
-                  _searchBox(),
-                  const SizedBox(height: 16),
-                  Expanded(child: _table()),
-                  _pagination(),
-                ],
-              ),
-            ),
-    );
-  }
+          : LayoutBuilder(
+              builder: (context, c) {
+                const tableHeadingHeight = 60.0;
+                const tableRowHeight = 66.0;
 
-  // ====== APPBAR (hazard/buletin premium style) ======
-  PreferredSizeWidget _appBar() {
-    return PreferredSize(
-      preferredSize: const Size.fromHeight(84),
-      child: Container(
-        decoration: BoxDecoration(
-          gradient: primaryGradient,
-          borderRadius: const BorderRadius.vertical(
-            bottom: Radius.circular(28),
-          ),
-          boxShadow: [
-            BoxShadow(
-              color: _primary.withOpacity(0.24),
-              blurRadius: 26,
-              offset: const Offset(0, 14),
-            ),
-          ],
-        ),
-        child: SafeArea(
-          bottom: false,
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(12, 6, 12, 10),
-            child: Row(
-              children: [
-                InkWell(
-                  borderRadius: BorderRadius.circular(999),
-                  onTap: () => Navigator.maybePop(context),
-                  child: Container(
-                    padding: const EdgeInsets.all(10),
-                    decoration: BoxDecoration(
-                      color: Colors.white.withOpacity(0.16),
-                      borderRadius: BorderRadius.circular(999),
-                      border: Border.all(color: Colors.white.withOpacity(0.16)),
-                    ),
-                    child: const Icon(Icons.arrow_back, color: Colors.white),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                const Expanded(
-                  child: Text(
-                    "Review Daily Plan",
-                    style: TextStyle(
-                      fontWeight: FontWeight.w900,
-                      fontSize: 20,
-                      color: Colors.white,
-                      letterSpacing: 0.2,
-                    ),
-                  ),
-                ),
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 12,
-                    vertical: 8,
-                  ),
-                  decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.16),
-                    borderRadius: BorderRadius.circular(999),
-                    border: Border.all(color: Colors.white.withOpacity(0.16)),
-                  ),
-                  child: Row(
+                final tableHeight =
+                    tableHeadingHeight + (rowsPerPage * tableRowHeight);
+
+                return Padding(
+                  padding: const EdgeInsets.fromLTRB(18, 18, 18, 18),
+                  child: Column(
                     children: [
-                      const Icon(
-                        Icons.layers_rounded,
-                        color: Colors.white,
-                        size: 16,
-                      ),
-                      const SizedBox(width: 6),
-                      Text(
-                        "${filtered.length}",
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.w900,
+                      Expanded(
+                        child: ListView(
+                          padding: EdgeInsets.zero,
+                          children: [
+                            ResultSearchBox(
+                              controller: _searchCtrl,
+                              onChanged: onSearch,
+                              hasQuery: _hasQuery,
+                              onClear: () {
+                                _searchCtrl.clear();
+                                onSearch("");
+                                setState(() {});
+                              },
+                            ),
+                            const SizedBox(height: 12),
+                            ResultDateFilterBar(
+                              datePreset: _datePreset,
+                              range: _presetRange(_datePreset),
+                              exporting: _exporting,
+                              filteredLength: filtered.length,
+                              canCurrentUserDownloadExcel:
+                                  _canCurrentUserDownloadExcel,
+                              onOpenDateFilterModal: () => openDateFilterModal(
+                                context: context,
+                                selectedPreset: _datePreset,
+                                onSelectAll: () {
+                                  setState(() => _datePreset = DatePreset.all);
+                                  _refreshFiltered();
+                                  Navigator.pop(context);
+                                },
+                                onSelectToday: () {
+                                  setState(
+                                    () => _datePreset = DatePreset.today,
+                                  );
+                                  _refreshFiltered();
+                                  Navigator.pop(context);
+                                },
+                                onSelectWeek: () {
+                                  setState(() => _datePreset = DatePreset.week);
+                                  _refreshFiltered();
+                                  Navigator.pop(context);
+                                },
+                                onSelectMonth: () {
+                                  setState(
+                                    () => _datePreset = DatePreset.month,
+                                  );
+                                  _refreshFiltered();
+                                  Navigator.pop(context);
+                                },
+                                onSelectCustom: () async {
+                                  Navigator.pop(context);
+                                  final picked = await pickCustomRange(
+                                    context: context,
+                                    initialDateRange: _customRange,
+                                  );
+                                  if (picked == null) return;
+
+                                  setState(() {
+                                    _customRange = picked;
+                                    _datePreset = DatePreset.custom;
+                                  });
+                                  _refreshFiltered();
+                                },
+                              ),
+                              onExportExcel: () async {
+                                if (_exporting) return;
+
+                                await exportExcelCurrentFilter(
+                                  context: context,
+                                  canCurrentUserDownloadExcel:
+                                      _canCurrentUserDownloadExcel,
+                                  type: ExportType.daily_plan,
+                                  range: _presetRange(_datePreset),
+                                  onNoAccess: () =>
+                                      showNoExcelAccessDialog(context),
+                                  onStartExporting: () {
+                                    if (!mounted) return;
+                                    setState(() => _exporting = true);
+                                  },
+                                  onFinishExporting: () {
+                                    if (!mounted) return;
+                                    setState(() => _exporting = false);
+                                  },
+                                );
+                              },
+                              onNoExcelAccess: () =>
+                                  showNoExcelAccessDialog(context),
+                              onTapPreset: (p) async {
+                                if (_datePreset == p) return;
+
+                                if (p == DatePreset.custom) {
+                                  final picked = await pickCustomRange(
+                                    context: context,
+                                    initialDateRange: _customRange,
+                                  );
+                                  if (picked == null) return;
+
+                                  setState(() {
+                                    _customRange = picked;
+                                    _datePreset = DatePreset.custom;
+                                  });
+                                  _refreshFiltered();
+                                  return;
+                                }
+
+                                setState(() {
+                                  _datePreset = p;
+                                });
+                                _refreshFiltered();
+                              },
+                            ),
+                            const SizedBox(height: 12),
+                            if (_isAdminOrSuperadmin) ...[
+                              ResultExcelAccessPanel(
+                                role: _role,
+                                unseenAddedBySuperadmin:
+                                    _unseenAddedBySuperadmin,
+                                loadingAccess: _loadingAccess,
+                                isEmpty: _accessList
+                                    .where((a) => a.feature == "daily_plan")
+                                    .isEmpty,
+                                totalCount: _sortedAccessNewest.length,
+                                previewChildren: _sortedAccessNewest
+                                    .take(3)
+                                    .map(
+                                      (a) => ResultExcelAccessRow(
+                                        access: a,
+                                        onChanged: (v) => _toggleAccess(a, v),
+                                        onDelete: () =>
+                                            confirmDeleteExcelAccess(
+                                              context: context,
+                                              feature: "daily_plan",
+                                              access: a,
+                                              onDeleted: () {
+                                                setState(() {
+                                                  _accessList.removeWhere(
+                                                    (x) =>
+                                                        x.userId == a.userId &&
+                                                        x.siteId == a.siteId,
+                                                  );
+                                                });
+                                              },
+                                            ),
+                                      ),
+                                    )
+                                    .toList(),
+                                onTapTambah: () async {
+                                  await Navigator.push(
+                                    context,
+                                    MaterialPageRoute(
+                                      builder: (_) => GrantExcelAccessPage(
+                                        currentUserId: AuthSession.userId!,
+                                        currentRole:
+                                            AuthSession.role ?? "member",
+                                        currentSiteId: AuthSession.siteId,
+                                        feature: "daily_plan",
+                                        onGranted: () async {
+                                          await _loadExcelAccess();
+                                        },
+                                      ),
+                                    ),
+                                  );
+                                },
+                                onTapShowMore: () => showExcelAccessBottomSheet(
+                                  context: context,
+                                  feature: "daily_plan",
+                                  allAccess: _sortedAccessNewest,
+                                  onToggleAccess: (access, value) =>
+                                      _toggleAccess(access, value),
+                                  onDeletedAccess: (access) async {
+                                    setState(() {
+                                      _accessList.removeWhere(
+                                        (x) =>
+                                            x.userId == access.userId &&
+                                            x.siteId == access.siteId,
+                                      );
+                                    });
+                                  },
+                                  refreshParent: () => setState(() {}),
+                                ),
+                                unseenBadge: Wrap(
+                                  crossAxisAlignment: WrapCrossAlignment.center,
+                                  spacing: 8,
+                                  runSpacing: 8,
+                                  children: [
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 10,
+                                        vertical: 6,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: const Color(0xFFFFF7ED),
+                                        borderRadius: BorderRadius.circular(
+                                          999,
+                                        ),
+                                        border: Border.all(
+                                          color: const Color(0xFFFDBA74),
+                                        ),
+                                      ),
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          AnimatedBuilder(
+                                            animation: _pulseAnimation,
+                                            builder: (_, child) {
+                                              return Transform.scale(
+                                                scale: _pulseAnimation.value,
+                                                child: child,
+                                              );
+                                            },
+                                            child: Container(
+                                              width: 8,
+                                              height: 8,
+                                              decoration: const BoxDecoration(
+                                                color: Color(0xFFF97316),
+                                                shape: BoxShape.circle,
+                                              ),
+                                            ),
+                                          ),
+                                          const SizedBox(width: 6),
+                                          Text(
+                                            _unseenAddedBySuperadmin == 1
+                                                ? "New Access"
+                                                : "$_unseenAddedBySuperadmin New",
+                                            style: const TextStyle(
+                                              fontWeight: FontWeight.w800,
+                                              fontSize: 11.5,
+                                              color: Color(0xFF9A3412),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              const SizedBox(height: 14),
+                            ],
+                            SizedBox(height: tableHeight, child: _table()),
+                            const SizedBox(height: 12),
+                            ResultPagination(
+                              filteredLength: filtered.length,
+                              currentPage: currentPage,
+                              rowsPerPage: rowsPerPage,
+                              pageDataLength: pageData.length,
+                              onRowsPerPageChanged: (v) {
+                                setState(() {
+                                  rowsPerPage = v;
+                                  currentPage = 0;
+                                  _ensurePageValid();
+                                });
+                                FocusScope.of(context).unfocus();
+                              },
+                              onPrevPage: () => setState(() {
+                                currentPage--;
+                                _ensurePageValid();
+                              }),
+                              onNextPage: () => setState(() {
+                                currentPage++;
+                                _ensurePageValid();
+                              }),
+                            ),
+                          ],
                         ),
                       ),
                     ],
                   ),
-                ),
-              ],
+                );
+              },
             ),
-          ),
-        ),
-      ),
     );
   }
 
-  // ====== SEARCH BOX (premium) ======
-  Widget _searchBox() {
-    return Container(
-      decoration: BoxDecoration(
-        color: _surface,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: Colors.black.withOpacity(0.05)),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.06),
-            blurRadius: 16,
-            offset: const Offset(0, 8),
-          ),
-        ],
-      ),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(18),
-        child: TextField(
-          controller: _searchCtrl,
-          onChanged: onSearch,
-          textInputAction: TextInputAction.search,
-          decoration: InputDecoration(
-            hintText: "Cari nama / komentar …",
-            hintStyle: const TextStyle(
-              color: Colors.black45,
-              fontWeight: FontWeight.w600,
-            ),
-            prefixIcon: Padding(
-              padding: const EdgeInsets.only(left: 12, right: 6),
-              child: Container(
-                width: 38,
-                height: 38,
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(14),
-                  gradient: primaryGradient,
-                  boxShadow: [
-                    BoxShadow(
-                      color: _primary.withOpacity(0.20),
-                      blurRadius: 14,
-                      offset: const Offset(0, 8),
-                    ),
-                  ],
-                ),
-                child: const Icon(Icons.search_rounded, color: Colors.white),
-              ),
-            ),
-            prefixIconConstraints: const BoxConstraints(minWidth: 64),
-            suffixIcon: !_hasQuery
-                ? null
-                : IconButton(
-                    onPressed: () {
-                      _searchCtrl.clear();
-                      onSearch("");
-                      setState(() {});
-                    },
-                    icon: Icon(
-                      Icons.close_rounded,
-                      color: Colors.black.withOpacity(0.55),
-                    ),
-                  ),
-            filled: true,
-            fillColor: _surface,
-            border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(18),
-              borderSide: BorderSide.none,
-            ),
-            enabledBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(18),
-              borderSide: BorderSide.none,
-            ),
-            focusedBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(18),
-              borderSide: BorderSide.none,
-            ),
-            contentPadding: const EdgeInsets.symmetric(
-              horizontal: 12,
-              vertical: 16,
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  // ====== TABLE (premium + zebra + empty filler) ======
   Widget _table() {
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(24),
-      child: Container(
-        decoration: BoxDecoration(
-          color: _surface,
-          borderRadius: BorderRadius.circular(24),
-          border: Border.all(color: Colors.black.withOpacity(0.05)),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withOpacity(0.06),
-              blurRadius: 18,
-              offset: const Offset(0, 10),
-            ),
-          ],
+    const tableHeadingHeight = 60.0;
+    const tableRowHeight = 66.0;
+
+    final columns = const [
+      DataColumn2(label: Center(child: Text("No")), fixedWidth: 90),
+      DataColumn2(label: Center(child: Text("Reviewer")), fixedWidth: 300),
+      DataColumn2(label: Center(child: Text("Role")), fixedWidth: 180),
+      DataColumn2(label: Center(child: Text("Site")), fixedWidth: 220),
+      DataColumn2(label: Center(child: Text("Department")), fixedWidth: 260),
+      DataColumn2(label: Center(child: Text("Buletin")), fixedWidth: 380),
+      DataColumn2(label: Center(child: Text("Creator Role")), fixedWidth: 180),
+      DataColumn2(label: Center(child: Text("Rating")), fixedWidth: 200),
+      DataColumn2(label: Center(child: Text("Komentar")), fixedWidth: 420),
+      DataColumn2(label: Center(child: Text("Tanggal")), fixedWidth: 180),
+    ];
+
+    return ResultTable(
+      headingRowHeight: tableHeadingHeight,
+      dataRowHeight: tableRowHeight,
+      minWidth: 5000,
+      columns: columns,
+      rows: [
+        ...List.generate(pageData.length, (i) => _rowPremium(pageData[i], i)),
+        ...List.generate(
+          rowsPerPage - pageData.length,
+          (_) => buildEmptyRow(columns.length),
         ),
-        child: Stack(
-          children: [
-            Container(
-              height: 60,
-              decoration: BoxDecoration(gradient: primaryGradient),
-            ),
-            DataTable2(
-              columnSpacing: 26,
-              horizontalMargin: 16,
-              minWidth: 3000,
-              fixedTopRows: 1,
-              headingRowHeight: 60,
-              dataRowHeight: 66,
-              headingRowColor: MaterialStateProperty.all(
-                const Color.fromRGBO(0, 0, 0, 0),
-              ),
-              headingTextStyle: const TextStyle(
-                color: Colors.white,
-                fontWeight: FontWeight.w900,
-                fontSize: 15.5,
-                letterSpacing: 0.2,
-              ),
-              dividerThickness: 0.6,
-              columns: const [
-                DataColumn2(label: Center(child: Text("No")), fixedWidth: 90),
-                DataColumn2(
-                  label: Center(child: Text("Reviewer")),
-                  fixedWidth: 300,
-                ),
-                DataColumn2(
-                  label: Center(child: Text("Role")),
-                  fixedWidth: 150,
-                ),
-                DataColumn2(
-                  label: Center(child: Text("Site")),
-                  fixedWidth: 220,
-                ),
-                DataColumn2(
-                  label: Center(child: Text("Department")),
-                  fixedWidth: 260,
-                ),
-                DataColumn2(
-                  label: Center(child: Text("Daily Plan")),
-                  fixedWidth: 380,
-                ),
-                DataColumn2(
-                  label: Center(child: Text("Creator Role")),
-                  fixedWidth: 180,
-                ),
-                DataColumn2(
-                  label: Center(child: Text("Rating")),
-                  fixedWidth: 200,
-                ),
-                DataColumn2(
-                  label: Center(child: Text("Komentar")),
-                  fixedWidth: 420,
-                ),
-                DataColumn2(
-                  label: Center(child: Text("Tanggal")),
-                  fixedWidth: 180,
-                ),
-              ],
-              rows: [
-                ...List.generate(
-                  pageData.length,
-                  (i) => _rowPremium(pageData[i], i),
-                ),
-                ...List.generate(
-                  rowsPerPage - pageData.length,
-                  (_) => _emptyRow(),
-                ),
-              ],
-            ),
-          ],
-        ),
-      ),
+      ],
     );
   }
 
   DataRow _rowPremium(DailyPlanReview e, int index) {
     final no = currentPage * rowsPerPage + index + 1;
-
     final bool zebra = index.isEven;
     final Color bg = zebra ? const Color(0xfff7f9fd) : Colors.white;
 
     return DataRow(
-      color: MaterialStateProperty.all(bg),
+      color: WidgetStateProperty.all(bg),
       cells: [
-        DataCell(Center(child: cell(no.toString(), weight: FontWeight.w900))),
-        DataCell(cellWrap(e.userName)),
-        DataCell(Center(child: _roleBadgePremium(e.reviewerRole))),
-        DataCell(cellWrap(e.siteName)),
-        DataCell(cellWrap(e.departmentName)),
-        DataCell(cellWrap(e.dailyPlanTitle)),
         DataCell(
-          Center(child: _creatorRoleBadgePremium(e.dailyPlanCreatorRole)),
+          Center(
+            child: buildResultCell(no.toString(), weight: FontWeight.w900),
+          ),
         ),
-        DataCell(_ratingCell(e.rating)),
-        DataCell(cellWrap(e.comment)),
-        DataCell(Center(child: cell(formatTanggal(e.createdAt)))),
+        DataCell(buildResultCellWrap(e.userName)),
+        DataCell(Center(child: roleBadgePremium(e.reviewerRole))),
+        DataCell(buildResultCellWrap(e.siteName)),
+        DataCell(buildResultCellWrap(e.departmentName)),
+        DataCell(buildResultCellWrap(e.dailyPlanTitle)),
+        DataCell(
+          Center(child: creatorRoleBadgePremium(e.dailyPlanCreatorRole)),
+        ),
+        DataCell(ratingCell(e.rating)),
+        DataCell(buildResultCellWrap(e.comment)),
+        DataCell(Center(child: buildResultCell(formatTanggal(e.createdAt)))),
       ],
     );
   }
 
-  DataRow _emptyRow() {
-    return DataRow(
-      cells: List.generate(_columnCount, (_) => const DataCell(SizedBox())),
-    );
+  String formatTanggal(DateTime? dt) {
+    if (dt == null) return "-";
+    return DateFormat("dd/MM/yyyy").format(dt);
   }
-
-  // ====== rating (tetap sama) ======
-  Widget _ratingCell(int rating) {
-    return Center(
-      child: Wrap(
-        spacing: 2,
-        children: List.generate(
-          5,
-          (i) => Icon(
-            i < rating ? Icons.star : Icons.star_border,
-            color: Colors.amber,
-            size: 18,
-          ),
-        ),
-      ),
-    );
-  }
-
-  // ====== badge premium feel (role value tetap) ======
-  Widget _roleBadgePremium(String role) {
-    final isAdmin = role == "admin";
-    final Color c = isAdmin ? Colors.orange : Colors.blue;
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-      decoration: BoxDecoration(
-        color: c.withOpacity(0.10),
-        borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: c.withOpacity(0.25)),
-      ),
-      child: Text(
-        role.toUpperCase(),
-        style: TextStyle(
-          color: Colors.black.withOpacity(0.70),
-          fontWeight: FontWeight.w900,
-          fontSize: 11.5,
-        ),
-      ),
-    );
-  }
-
-  Widget _creatorRoleBadgePremium(String role) {
-    final Color c = role == "superadmin" ? Colors.redAccent : Colors.green;
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-      decoration: BoxDecoration(
-        color: c.withOpacity(0.10),
-        borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: c.withOpacity(0.25)),
-      ),
-      child: Text(
-        role.toUpperCase(),
-        style: TextStyle(
-          color: Colors.black.withOpacity(0.70),
-          fontWeight: FontWeight.w900,
-          fontSize: 11.5,
-        ),
-      ),
-    );
-  }
-
-  // ====== pagination premium ======
-  Widget _pagination() {
-    final totalPage = _totalPage;
-
-    final start = filtered.isEmpty ? 0 : (currentPage * rowsPerPage + 1);
-    final end = (currentPage * rowsPerPage + pageData.length).clamp(
-      0,
-      filtered.length,
-    );
-
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final bool compact = constraints.maxWidth < 420;
-
-        final String topLeft = compact
-            ? "Menampilkan $start–$end"
-            : "Menampilkan data $start–$end";
-
-        final String topRight = compact
-            ? "Total: ${filtered.length}"
-            : "Total data: ${filtered.length} • Halaman: ${currentPage + 1}/$totalPage";
-
-        return Container(
-          width: double.infinity,
-          margin: const EdgeInsets.only(top: 14),
-          padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
-          decoration: BoxDecoration(
-            color: _surface,
-            borderRadius: BorderRadius.circular(18),
-            border: Border.all(color: Colors.black.withOpacity(0.05)),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(0.06),
-                blurRadius: 14,
-                offset: const Offset(0, 8),
-              ),
-            ],
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      topLeft,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        color: Colors.black.withOpacity(0.60),
-                        fontWeight: FontWeight.w800,
-                        fontSize: 12.5,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  Text(
-                    topRight,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      color: Colors.black.withOpacity(0.45),
-                      fontWeight: FontWeight.w700,
-                      fontSize: 12,
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 12),
-              Row(
-                children: [
-                  _rowsPerPageControl(
-                    compact: compact,
-                    value: rowsPerPage,
-                    onChanged: (v) {
-                      setState(() {
-                        rowsPerPage = v;
-                        currentPage = 0;
-                        _ensurePageValid();
-                      });
-                      FocusScope.of(context).unfocus();
-                    },
-                  ),
-                  const SizedBox(width: 12),
-                  const Spacer(),
-                  Wrap(
-                    spacing: 10,
-                    crossAxisAlignment: WrapCrossAlignment.center,
-                    children: [
-                      _pageIcon(
-                        enabled: currentPage > 0,
-                        icon: Icons.chevron_left_rounded,
-                        onTap: () => setState(() {
-                          currentPage--;
-                          _ensurePageValid();
-                        }),
-                      ),
-                      Container(
-                        constraints: BoxConstraints(
-                          maxWidth: compact ? 150 : 220,
-                        ),
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 14,
-                          vertical: 9,
-                        ),
-                        decoration: BoxDecoration(
-                          color: _primary.withOpacity(0.08),
-                          borderRadius: BorderRadius.circular(999),
-                          border: Border.all(color: _primary.withOpacity(0.14)),
-                        ),
-                        child: FittedBox(
-                          fit: BoxFit.scaleDown,
-                          alignment: Alignment.center,
-                          child: Text(
-                            compact
-                                ? "${currentPage + 1} / $totalPage"
-                                : "Page ${currentPage + 1} / $totalPage",
-                            style: TextStyle(
-                              fontWeight: FontWeight.w900,
-                              color: Colors.black.withOpacity(0.72),
-                            ),
-                          ),
-                        ),
-                      ),
-                      _pageIcon(
-                        enabled: currentPage + 1 < totalPage,
-                        icon: Icons.chevron_right_rounded,
-                        onTap: () => setState(() {
-                          currentPage++;
-                          _ensurePageValid();
-                        }),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-              const SizedBox(height: 10),
-              Text(
-                compact
-                    ? "Tip: ubah jumlah baris untuk mempercepat pencarian."
-                    : "Tip: atur jumlah baris (10/25/50) agar navigasi lebih nyaman.",
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  color: Colors.black.withOpacity(0.38),
-                  fontWeight: FontWeight.w600,
-                  fontSize: 11.5,
-                ),
-              ),
-            ],
-          ),
-        );
-      },
-    );
-  }
-
-  Widget _rowsPerPageControl({
-    required bool compact,
-    required int value,
-    required ValueChanged<int> onChanged,
-  }) {
-    final items = const [10, 25, 50];
-
-    BoxDecoration deco() => BoxDecoration(
-      color: _primary.withOpacity(0.06),
-      borderRadius: BorderRadius.circular(999),
-      border: Border.all(color: _primary.withOpacity(0.14)),
-    );
-
-    TextStyle tStyle() => TextStyle(
-      fontWeight: FontWeight.w900,
-      color: Colors.black.withOpacity(0.70),
-    );
-
-    if (compact) {
-      return Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-        decoration: deco(),
-        child: DropdownButtonHideUnderline(
-          child: DropdownButton<int>(
-            value: value,
-            isDense: true,
-            icon: Icon(
-              Icons.expand_more_rounded,
-              size: 18,
-              color: Colors.black.withOpacity(0.55),
-            ),
-            items: items
-                .map(
-                  (v) => DropdownMenuItem<int>(
-                    value: v,
-                    child: Text("$v", style: tStyle()),
-                  ),
-                )
-                .toList(),
-            onChanged: (v) {
-              if (v == null) return;
-              onChanged(v);
-            },
-          ),
-        ),
-      );
-    }
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-      decoration: deco(),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text(
-            "Rows",
-            style: TextStyle(
-              fontWeight: FontWeight.w800,
-              color: Colors.black.withOpacity(0.55),
-            ),
-          ),
-          const SizedBox(width: 8),
-          DropdownButtonHideUnderline(
-            child: DropdownButton<int>(
-              value: value,
-              isDense: true,
-              icon: Icon(
-                Icons.expand_more_rounded,
-                color: Colors.black.withOpacity(0.55),
-              ),
-              items: items
-                  .map(
-                    (v) => DropdownMenuItem<int>(
-                      value: v,
-                      child: Text("$v", style: tStyle()),
-                    ),
-                  )
-                  .toList(),
-              onChanged: (v) {
-                if (v == null) return;
-                onChanged(v);
-              },
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _pageIcon({
-    required bool enabled,
-    required IconData icon,
-    required VoidCallback onTap,
-  }) {
-    return InkWell(
-      borderRadius: BorderRadius.circular(14),
-      onTap: enabled ? onTap : null,
-      child: Opacity(
-        opacity: enabled ? 1 : 0.35,
-        child: Container(
-          padding: const EdgeInsets.all(10),
-          decoration: BoxDecoration(
-            color: enabled
-                ? _primary.withOpacity(0.08)
-                : Colors.black.withOpacity(0.04),
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(
-              color: enabled
-                  ? _primary.withOpacity(0.14)
-                  : Colors.black.withOpacity(0.05),
-            ),
-          ),
-          child: Icon(icon, color: Colors.black.withOpacity(0.65)),
-        ),
-      ),
-    );
-  }
-}
-
-// ===== Helpers (tetap aman untuk production) =====
-Widget cellWrap(String? text) {
-  final safeText = text ?? "-";
-
-  return Padding(
-    padding: const EdgeInsets.symmetric(horizontal: 12),
-    child: Align(
-      alignment: Alignment.center,
-      child: Text(
-        safeText.isEmpty ? "-" : safeText,
-        textAlign: TextAlign.center,
-        softWrap: true,
-        style: const TextStyle(height: 1.5),
-      ),
-    ),
-  );
-}
-
-Widget cell(String? text, {FontWeight? weight}) {
-  final safeText = text ?? "-";
-  return Padding(
-    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-    child: Align(
-      alignment: Alignment.center,
-      child: Tooltip(
-        message: safeText,
-        child: Text(
-          safeText.isEmpty ? "-" : safeText,
-          textAlign: TextAlign.center,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: TextStyle(fontWeight: weight),
-        ),
-      ),
-    ),
-  );
-}
-
-String formatTanggal(DateTime? dt) {
-  if (dt == null) return "-";
-  return DateFormat("dd/MM/yyyy").format(dt);
 }

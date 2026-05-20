@@ -1,13 +1,18 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:safety_apps/drawer/access_permission.dart';
+import 'package:safety_apps/drawer/excel_access_request.dart';
 import 'package:safety_apps/network/api_client.dart';
-import 'package:safety_apps/main.dart'; // navigatorKey
+import 'package:safety_apps/main.dart';
+import 'package:safety_apps/pages/profile_page.dart';
 
 class NotificationsPage extends StatefulWidget {
   final String name;
   final String site;
   final String department;
   final String role;
+  final String email;
+  final String employeeId;
 
   const NotificationsPage({
     super.key,
@@ -15,6 +20,8 @@ class NotificationsPage extends StatefulWidget {
     required this.site,
     required this.department,
     required this.role,
+    this.email = "",
+    this.employeeId = "",
   });
 
   @override
@@ -148,9 +155,51 @@ class _NotificationsPageState extends State<NotificationsPage> {
     } catch (_) {}
   }
 
+  Future<void> _markAllAsRead() async {
+    final hasUnread = _items.any((x) => x["is_read"] == false);
+
+    if (!hasUnread) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Semua notifikasi sudah dibaca.")),
+      );
+      return;
+    }
+
+    try {
+      final res = await ApiClient.put("/notifications/read-all");
+      if (res.statusCode != 200) {
+        throw Exception("Gagal menandai semua notifikasi sebagai dibaca");
+      }
+
+      if (!mounted) return;
+      setState(() {
+        for (final item in _items) {
+          item["is_read"] = true;
+        }
+
+        final unread = _items.where((x) => x["is_read"] == false).toList();
+        final read = _items.where((x) => x["is_read"] == true).toList();
+        _items = [...unread, ...read];
+      });
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text("Semua notifikasi ditandai sudah dibaca."),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text("Error: $e")));
+    }
+  }
+
   void _navigateByNotifData(Map<String, dynamic> data) {
     final type = (data["type"] ?? "").toString();
 
+    // ===== existing types =====
     if (type == "daily_plan") {
       final planId = int.tryParse((data["daily_plan_id"] ?? "").toString());
       if (planId == null) return;
@@ -180,6 +229,99 @@ class _NotificationsPageState extends State<NotificationsPage> {
       navigatorKey.currentState?.pushNamed(
         "/lpi-results",
         arguments: {"open_detail_id": lpiId},
+      );
+      return;
+    }
+
+    if (type == "role_changed") {
+      navigatorKey.currentState?.push(
+        MaterialPageRoute(
+          builder: (_) => ProfilePage(
+            site: widget.site,
+            department: widget.department,
+            name: widget.name,
+            email: widget.email,
+            employeeId: widget.employeeId,
+          ),
+        ),
+      );
+      return;
+    }
+
+    if (type == "excel_access_request") {
+      final role = widget.role.toLowerCase().trim();
+      if (!(role == "admin" || role == "superadmin")) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text("Notifikasi ini untuk Admin/Superadmin."),
+          ),
+        );
+        return;
+      }
+
+      final feature = (data["feature"] ?? "").toString().trim();
+
+      navigatorKey.currentState?.push(
+        MaterialPageRoute(
+          builder: (_) => ExcelAccessRequestPage(feature: feature),
+        ),
+      );
+      return;
+    }
+
+    if (type == "excel_access_decision") {
+      final role = widget.role.toLowerCase().trim();
+      if (role != "member") {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Notifikasi ini untuk Member.")),
+        );
+        return;
+      }
+
+      final feature = (data["feature"] ?? "").toString().trim();
+
+      navigatorKey.currentState?.push(
+        MaterialPageRoute(
+          builder: (_) => AccessPermissionPage(feature: feature),
+        ),
+      );
+      return;
+    }
+
+    if (type == "excel_access_revoked") {
+      final role = widget.role.toLowerCase().trim();
+      if (role != "member") {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Notifikasi ini untuk Member.")),
+        );
+        return;
+      }
+
+      final feature = (data["feature"] ?? "").toString().trim();
+
+      navigatorKey.currentState?.push(
+        MaterialPageRoute(
+          builder: (_) => AccessPermissionPage(feature: feature),
+        ),
+      );
+      return;
+    }
+
+    if (type == "excel_access_granted") {
+      final role = widget.role.toLowerCase().trim();
+      if (role != "member") {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Notifikasi ini untuk Member.")),
+        );
+        return;
+      }
+
+      final feature = (data["feature"] ?? "").toString().trim();
+
+      navigatorKey.currentState?.push(
+        MaterialPageRoute(
+          builder: (_) => AccessPermissionPage(feature: feature),
+        ),
       );
       return;
     }
@@ -290,6 +432,16 @@ class _NotificationsPageState extends State<NotificationsPage> {
           return "Buletin";
         case "lpi":
           return "LPI";
+        case "role_changed":
+          return "Change Role";
+        case "excel_access_request":
+          return "Excel Request";
+        case "excel_access_decision":
+          return "Excel Decision";
+        case "excel_access_revoked":
+          return "Excel Revoked";
+        case "excel_access_granted":
+          return "Excel Granted";
         default:
           return "Semua";
       }
@@ -687,6 +839,54 @@ class _NotificationsPageState extends State<NotificationsPage> {
                                 setSheet(() {});
                               },
                             ),
+                            chip(
+                              selected: _filterType == "role_changed",
+                              label: "Change Role",
+                              onTap: () {
+                                setState(() => _filterType = "role_changed");
+                                setSheet(() {});
+                              },
+                            ),
+                            chip(
+                              selected: _filterType == "excel_access_request",
+                              label: "Excel Request",
+                              onTap: () {
+                                setState(
+                                  () => _filterType = "excel_access_request",
+                                );
+                                setSheet(() {});
+                              },
+                            ),
+                            chip(
+                              selected: _filterType == "excel_access_decision",
+                              label: "Excel Decision",
+                              onTap: () {
+                                setState(
+                                  () => _filterType = "excel_access_decision",
+                                );
+                                setSheet(() {});
+                              },
+                            ),
+                            chip(
+                              selected: _filterType == "excel_access_revoked",
+                              label: "Excel Revoked",
+                              onTap: () {
+                                setState(
+                                  () => _filterType = "excel_access_revoked",
+                                );
+                                setSheet(() {});
+                              },
+                            ),
+                            chip(
+                              selected: _filterType == "excel_access_granted",
+                              label: "Excel Granted",
+                              onTap: () {
+                                setState(
+                                  () => _filterType = "excel_access_granted",
+                                );
+                                setSheet(() {});
+                              },
+                            ),
                           ],
                         ),
 
@@ -981,6 +1181,41 @@ class _NotificationsPageState extends State<NotificationsPage> {
                   ],
                 ),
               ),
+              const SizedBox(width: 8),
+              PopupMenuButton<String>(
+                onSelected: (value) async {
+                  if (value == "read_all") {
+                    await _markAllAsRead();
+                  }
+                },
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                color: Colors.white,
+                itemBuilder: (context) => const [
+                  PopupMenuItem<String>(
+                    value: "read_all",
+                    child: Row(
+                      children: [
+                        Icon(Icons.done_all_rounded, size: 18),
+                        SizedBox(width: 10),
+                        Text("Baca semua"),
+                      ],
+                    ),
+                  ),
+                ],
+                child: Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withOpacity(0.14),
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                  child: const Icon(
+                    Icons.more_vert_rounded,
+                    color: Colors.white,
+                  ),
+                ),
+              ),
             ],
           ),
           const SizedBox(height: 14),
@@ -1150,13 +1385,11 @@ class _NotificationsPageState extends State<NotificationsPage> {
     final icon = _iconByType(type);
     final chip = _chipByType(type);
 
-    // ===== READ STYLE (tetap kalem) =====
     final readBorder = Colors.black.withOpacity(0.06);
     final readShadow = const [
       BoxShadow(color: Colors.black12, blurRadius: 10, offset: Offset(0, 4)),
     ];
 
-    // ===== UNREAD STYLE (lebih “menyala”) =====
     final unreadBorder = const Color(0xff1d63ff).withOpacity(0.45);
     final unreadShadow = const [
       BoxShadow(color: Colors.black12, blurRadius: 18, offset: Offset(0, 8)),
@@ -1378,6 +1611,16 @@ class _NotificationsPageState extends State<NotificationsPage> {
         return Icons.article_rounded;
       case "lpi":
         return Icons.report_gmailerrorred_rounded;
+      case "role_changed":
+        return Icons.manage_accounts_rounded;
+      case "excel_access_request":
+        return Icons.request_page_rounded;
+      case "excel_access_decision":
+        return Icons.rule_rounded;
+      case "excel_access_revoked":
+        return Icons.block_rounded;
+      case "excel_access_granted":
+        return Icons.verified_rounded;
       default:
         return Icons.notifications_rounded;
     }
@@ -1388,6 +1631,11 @@ class _NotificationsPageState extends State<NotificationsPage> {
     if (type == "daily_plan") text = "Daily Plan";
     if (type == "buletin") text = "Buletin";
     if (type == "lpi") text = "LPI";
+    if (type == "role_changed") text = "Change Role";
+    if (type == "excel_access_request") text = "Excel Request";
+    if (type == "excel_access_decision") text = "Excel Decision";
+    if (type == "excel_access_revoked") text = "Excel Revoked";
+    if (type == "excel_access_granted") text = "Excel Granted";
     if (text == null) return null;
 
     return Container(
@@ -1404,7 +1652,6 @@ class _NotificationsPageState extends State<NotificationsPage> {
   }
 
   String _formatCreatedAt(dynamic raw) {
-    // created_at dari DB biasanya ISO string
     final s = (raw ?? "").toString();
     if (s.isEmpty) return "-";
 

@@ -1,7 +1,7 @@
 import 'dart:async';
-
 import 'package:flutter/material.dart';
 import 'package:safety_apps/drawer/about_page.dart';
+import 'package:safety_apps/drawer/audit_log_page.dart';
 import 'package:safety_apps/drawer/change_password.dart';
 import 'package:safety_apps/drawer/event_result.dart';
 import 'package:safety_apps/drawer/hazard_result_page.dart';
@@ -19,6 +19,8 @@ import 'package:safety_apps/pages/login_page.dart';
 import 'package:safety_apps/pages/profile_page.dart';
 import 'package:safety_apps/pages/home/p2h.dart';
 import 'package:safety_apps/session/auth_session.dart';
+import 'package:safety_apps/session/permission_refresh.dart';
+import 'package:safety_apps/widgets/app_bottom_nav.dart';
 import 'home/form_hazard_page.dart';
 import 'home/form_lpi_page.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -46,6 +48,224 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   bool _isLoggingOut = false;
   Timer? _sessionTimer;
+
+  bool _loadingExcelAccess = false;
+  DateTime? _lastExcelAccessLoadAt;
+
+  bool _memberCanSeeP5MResults = false;
+  bool _memberCanSeeLPIResults = false;
+  bool _memberCanSeeHazardResults = false;
+  bool _memberCanSeeInspeksiCHPResults = false;
+  bool _memberCanSeeInspeksiJalanTambangResults = false;
+  bool _memberCanSeeInspeksiKantorResults = false;
+  bool _memberCanSeeInspeksiMTDResults = false;
+  bool _memberCanSeeInspeksiPlantResults = false;
+  bool _memberCanSeeInspeksiFasilitasBBMResults = false;
+  bool _memberCanSeeP2HLVResults = false;
+  bool _memberCanSeeP2HBusResults = false;
+  bool _memberCanSeeP2HDTResults = false;
+  bool _memberCanSeeP2HExcavatorResults = false;
+  bool _memberCanSeeP2HGraderResults = false;
+  bool _memberCanSeeP2HDozerResults = false;
+  bool _memberCanSeeP2HTowerLampResults = false;
+  bool _memberCanSeeP2HCraneResults = false;
+  bool _memberCanSeeP2HForkliftResults = false;
+  bool _memberCanSeeP2HTruckHaulingResults = false;
+  bool _memberCanSeeP2HWaterTruckResults = false;
+  bool _memberCanSeeP2HWheelLoaderResults = false;
+  bool _memberCanSeeP2HWaterPumpResults = false;
+  bool _memberCanSeeP2HServiceTruckResults = false;
+  bool _memberCanSeeP2HCompactorResults = false;
+  bool _memberCanSeeP2HFuelTruckResults = false;
+  bool _memberCanSeeDailyPlanResults = false;
+  bool _memberCanSeeBuletinResults = false;
+  bool _memberCanSeeTrainingResults = false;
+
+  bool get _memberCanSeeAnyInspectionResults {
+    return _memberCanSeeInspeksiCHPResults ||
+        _memberCanSeeInspeksiJalanTambangResults ||
+        _memberCanSeeInspeksiKantorResults ||
+        _memberCanSeeInspeksiMTDResults ||
+        _memberCanSeeInspeksiPlantResults ||
+        _memberCanSeeInspeksiFasilitasBBMResults;
+  }
+
+  bool get _memberCanSeeAnyP2HResults {
+    return _memberCanSeeP2HLVResults ||
+        _memberCanSeeP2HBusResults ||
+        _memberCanSeeP2HDTResults ||
+        _memberCanSeeP2HExcavatorResults ||
+        _memberCanSeeP2HGraderResults ||
+        _memberCanSeeP2HDozerResults ||
+        _memberCanSeeP2HTowerLampResults ||
+        _memberCanSeeP2HCraneResults ||
+        _memberCanSeeP2HForkliftResults ||
+        _memberCanSeeP2HTruckHaulingResults ||
+        _memberCanSeeP2HWaterTruckResults ||
+        _memberCanSeeP2HWheelLoaderResults ||
+        _memberCanSeeP2HWaterPumpResults ||
+        _memberCanSeeP2HServiceTruckResults ||
+        _memberCanSeeP2HCompactorResults ||
+        _memberCanSeeP2HFuelTruckResults;
+  }
+
+  bool get _memberCanSeeAnyEventResults {
+    return _memberCanSeeDailyPlanResults ||
+        _memberCanSeeBuletinResults ||
+        _memberCanSeeTrainingResults;
+  }
+
+  void _resetMemberExcelAccess() {
+    _memberCanSeeP5MResults = false;
+    _memberCanSeeLPIResults = false;
+    _memberCanSeeHazardResults = false;
+    _memberCanSeeInspeksiCHPResults = false;
+    _memberCanSeeInspeksiJalanTambangResults = false;
+    _memberCanSeeInspeksiKantorResults = false;
+    _memberCanSeeInspeksiMTDResults = false;
+    _memberCanSeeInspeksiPlantResults = false;
+    _memberCanSeeInspeksiFasilitasBBMResults = false;
+
+    _memberCanSeeP2HLVResults = false;
+    _memberCanSeeP2HBusResults = false;
+    _memberCanSeeP2HDTResults = false;
+    _memberCanSeeP2HExcavatorResults = false;
+    _memberCanSeeP2HGraderResults = false;
+    _memberCanSeeP2HDozerResults = false;
+    _memberCanSeeP2HTowerLampResults = false;
+    _memberCanSeeP2HCraneResults = false;
+    _memberCanSeeP2HForkliftResults = false;
+    _memberCanSeeP2HTruckHaulingResults = false;
+    _memberCanSeeP2HWaterTruckResults = false;
+    _memberCanSeeP2HWheelLoaderResults = false;
+    _memberCanSeeP2HWaterPumpResults = false;
+    _memberCanSeeP2HServiceTruckResults = false;
+    _memberCanSeeP2HCompactorResults = false;
+    _memberCanSeeP2HFuelTruckResults = false;
+
+    _memberCanSeeDailyPlanResults = false;
+    _memberCanSeeBuletinResults = false;
+    _memberCanSeeTrainingResults = false;
+  }
+
+  bool _parseCanDownload(dynamic response) {
+    try {
+      if (response.statusCode != 200) return false;
+      final data = jsonDecode(response.body);
+      return (data["can_download"] ?? false) == true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<bool> _fetchExcelAccess(String feature) async {
+    final response = await ApiClient.get("/excel-access/me?feature=$feature");
+    return _parseCanDownload(response);
+  }
+
+  void _handleExcelAccessRefresh() {
+    _loadMemberExcelAccess(force: true);
+  }
+
+  Future<void> _loadMemberExcelAccess({bool force = false}) async {
+    final role = _currentRole.toLowerCase().trim();
+
+    if (role != "member") {
+      if (!mounted) return;
+      setState(_resetMemberExcelAccess);
+      return;
+    }
+
+    if (_loadingExcelAccess) {
+      return;
+    }
+
+    final now = DateTime.now();
+
+    if (!force &&
+        _lastExcelAccessLoadAt != null &&
+        now.difference(_lastExcelAccessLoadAt!) < const Duration(seconds: 30)) {
+      return;
+    }
+
+    _loadingExcelAccess = true;
+    _lastExcelAccessLoadAt = now;
+
+    try {
+      final results = await Future.wait([
+        _fetchExcelAccess("p5m"),
+        _fetchExcelAccess("lpi"),
+        _fetchExcelAccess("hazard"),
+        _fetchExcelAccess("inspeksi_chp"),
+        _fetchExcelAccess("inspeksi_jalan_tambang"),
+        _fetchExcelAccess("inspeksi_kantor"),
+        _fetchExcelAccess("inspeksi_mtd"),
+        _fetchExcelAccess("inspeksi_plant"),
+        _fetchExcelAccess("inspeksi_fasilitas_bbm"),
+        _fetchExcelAccess("p2h_lv"),
+        _fetchExcelAccess("p2h_bus"),
+        _fetchExcelAccess("p2h_dt"),
+        _fetchExcelAccess("p2h_excavator"),
+        _fetchExcelAccess("p2h_grader"),
+        _fetchExcelAccess("p2h_dozer"),
+        _fetchExcelAccess("p2h_tower_lamp"),
+        _fetchExcelAccess("p2h_crane"),
+        _fetchExcelAccess("p2h_forklift"),
+        _fetchExcelAccess("p2h_truck_hauling"),
+        _fetchExcelAccess("p2h_water_truck"),
+        _fetchExcelAccess("p2h_wheel_loader"),
+        _fetchExcelAccess("p2h_water_pump"),
+        _fetchExcelAccess("p2h_service_truck"),
+        _fetchExcelAccess("p2h_compactor"),
+        _fetchExcelAccess("p2h_fuel_truck"),
+        _fetchExcelAccess("daily_plan"),
+        _fetchExcelAccess("buletin"),
+        _fetchExcelAccess("training"),
+      ]);
+
+      if (!mounted) return;
+
+      setState(() {
+        _memberCanSeeP5MResults = results[0];
+        _memberCanSeeLPIResults = results[1];
+        _memberCanSeeHazardResults = results[2];
+        _memberCanSeeInspeksiCHPResults = results[3];
+        _memberCanSeeInspeksiJalanTambangResults = results[4];
+        _memberCanSeeInspeksiKantorResults = results[5];
+        _memberCanSeeInspeksiMTDResults = results[6];
+        _memberCanSeeInspeksiPlantResults = results[7];
+        _memberCanSeeInspeksiFasilitasBBMResults = results[8];
+
+        _memberCanSeeP2HLVResults = results[9];
+        _memberCanSeeP2HBusResults = results[10];
+        _memberCanSeeP2HDTResults = results[11];
+        _memberCanSeeP2HExcavatorResults = results[12];
+        _memberCanSeeP2HGraderResults = results[13];
+        _memberCanSeeP2HDozerResults = results[14];
+        _memberCanSeeP2HTowerLampResults = results[15];
+        _memberCanSeeP2HCraneResults = results[16];
+        _memberCanSeeP2HForkliftResults = results[17];
+        _memberCanSeeP2HTruckHaulingResults = results[18];
+        _memberCanSeeP2HWaterTruckResults = results[19];
+        _memberCanSeeP2HWheelLoaderResults = results[20];
+        _memberCanSeeP2HWaterPumpResults = results[21];
+        _memberCanSeeP2HServiceTruckResults = results[22];
+        _memberCanSeeP2HCompactorResults = results[23];
+        _memberCanSeeP2HFuelTruckResults = results[24];
+
+        _memberCanSeeDailyPlanResults = results[25];
+        _memberCanSeeBuletinResults = results[26];
+        _memberCanSeeTrainingResults = results[27];
+      });
+    } catch (e) {
+      debugPrint("❌ LoadMemberExcelAccess error: $e");
+
+      if (!mounted) return;
+      setState(_resetMemberExcelAccess);
+    } finally {
+      _loadingExcelAccess = false;
+    }
+  }
 
   final List<Map<String, dynamic>> menuItems = [
     {
@@ -98,41 +318,42 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     },
   ];
 
-  List<Map<String, dynamic>> drawerMenus = [];
-
   List<Map<String, dynamic>> filteredMenu = [];
 
   final TextEditingController searchController = TextEditingController();
 
+  bool _checkingProfile = false;
+
   void _startSessionPolling() {
     _sessionTimer?.cancel();
-
     _sessionTimer = Timer.periodic(const Duration(seconds: 10), (_) async {
+      if (_checkingProfile) return;
+      _checkingProfile = true;
       try {
         await ApiClient.get("/profile");
-      } catch (_) {}
+      } catch (_) {
+      } finally {
+        _checkingProfile = false;
+      }
     });
   }
 
   @override
   void initState() {
     super.initState();
-    print("ROLE DARI LOGIN => '${widget.role}'");
+    debugPrint("🏠 HomePage: initState masuk");
+    print("ROLE DARI LOGIN => '$_currentRole'");
     filterMenuByRole();
-    buildDrawerMenu();
     _loadUnreadCount();
-
-    // WidgetsBinding.instance.addPostFrameCallback((_) {
-    //   _checkRoleStillValid();
-    // });
-
+    debugPrint("📡 HomePage: mulai load permission");
+    _loadMemberExcelAccess();
+    PermissionRefresh.excelAccessVersion.addListener(_handleExcelAccessRefresh);
     WidgetsBinding.instance.addObserver(this);
-
     _startSessionPolling();
   }
 
   void filterMenuByRole() {
-    final role = widget.role.toLowerCase().trim();
+    final role = _currentRole.toLowerCase().trim();
 
     if (role == "superadmin") {
       filteredMenu = List.from(menuItems);
@@ -146,7 +367,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   }
 
   void filterSearch(String query) {
-    final role = widget.role.toLowerCase().trim();
+    final role = _currentRole.toLowerCase().trim();
     final input = query.toLowerCase().trim();
 
     bool roleAllowed(Map item) {
@@ -176,9 +397,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     });
   }
 
-  // ===================== DRAWER MENU BUILDER =====================
-  void buildDrawerMenu() {
-    drawerMenus = [
+  List<Map<String, dynamic>> get drawerMenus {
+    final role = _currentRole.toLowerCase().trim();
+
+    return [
       {
         "icon": Icons.home_rounded,
         "label": "Home",
@@ -191,79 +413,147 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         "roles": ["superadmin", "admin", "member"],
         "page": AboutPage(),
       },
-
       {
         "icon": Icons.person_add,
         "label": "User Management",
         "roles": ["admin", "superadmin"],
         "page": UserManagementPage(),
       },
-
       {
         "icon": Icons.lock_outline,
         "label": "Change Password",
         "roles": ["superadmin", "admin", "member"],
         "page": ChangePasswordPage(),
       },
+
       {
-        "icon": Icons.report_gmailerrorred,
-        "label": "LPI Results",
+        "icon": Icons.manage_search_rounded,
+        "label": "Audit Log",
         "roles": ["admin", "superadmin"],
-        "page": LPIResultPage(),
+        "page": AuditLogPage(),
       },
-      {
-        "icon": Icons.warning_amber,
-        "label": "Hazard Results",
-        "roles": ["admin", "superadmin"],
-        "page": HazardResultPage(),
-      },
-      {
-        "icon": Icons.search_rounded,
-        "label": "Inspection Results",
-        "roles": ["admin", "superadmin"],
-        "page": InspectionResultPage(),
-      },
-      {
-        "icon": Icons.fact_check_rounded,
-        "label": "P2H Results",
-        "roles": ["admin", "superadmin"],
-        "page": P2HResultPage(),
-      },
-      {
-        "icon": Icons.table_chart_rounded,
-        "label": "P5M Results",
-        "roles": ["admin", "superadmin"],
-        "page": P5MResultPage(),
-      },
-      {
-        "icon": Icons.event_sharp,
-        "label": "Events",
-        "roles": ["admin", "superadmin"],
-        "page": EventPage(),
-      },
+
+      if (role == "admin" ||
+          role == "superadmin" ||
+          (role == "member" && _memberCanSeeLPIResults))
+        {
+          "icon": Icons.report_gmailerrorred,
+          "label": "LPI Results",
+          "roles": ["admin", "superadmin", "member"],
+          "page": LPIResultPage(),
+        },
+      if (role == "admin" ||
+          role == "superadmin" ||
+          (role == "member" && _memberCanSeeHazardResults))
+        {
+          "icon": Icons.warning_amber,
+          "label": "Hazard Results",
+          "roles": ["admin", "superadmin", "member"],
+          "page": HazardResultPage(),
+        },
+      if (role == "admin" ||
+          role == "superadmin" ||
+          (role == "member" && _memberCanSeeAnyInspectionResults))
+        {
+          "icon": Icons.search_rounded,
+          "label": "Inspection Results",
+          "roles": ["admin", "superadmin", "member"],
+          "page": InspectionResultPage(
+            canSeeInspeksiCHP: _memberCanSeeInspeksiCHPResults,
+            canSeeInspeksiJalanTambang:
+                _memberCanSeeInspeksiJalanTambangResults,
+            canSeeInspeksiKantor: _memberCanSeeInspeksiKantorResults,
+            canSeeInspeksiMTD: _memberCanSeeInspeksiMTDResults,
+            canSeeInspeksiPlant: _memberCanSeeInspeksiPlantResults,
+            canSeeInspeksiFasilitasBBM:
+                _memberCanSeeInspeksiFasilitasBBMResults,
+            userRole: _currentRole,
+          ),
+        },
+      if (role == "admin" ||
+          role == "superadmin" ||
+          (role == "member" && _memberCanSeeAnyP2HResults))
+        {
+          "icon": Icons.fact_check_rounded,
+          "label": "P2H Results",
+          "roles": ["admin", "superadmin", "member"],
+          "page": P2HResultPage(
+            canSeeLV: _memberCanSeeP2HLVResults,
+            canSeeBus: _memberCanSeeP2HBusResults,
+            canSeeDT: _memberCanSeeP2HDTResults,
+            canSeeExcavator: _memberCanSeeP2HExcavatorResults,
+            canSeeGrader: _memberCanSeeP2HGraderResults,
+            canSeeDozer: _memberCanSeeP2HDozerResults,
+            canSeeTowerLamp: _memberCanSeeP2HTowerLampResults,
+            canSeeCrane: _memberCanSeeP2HCraneResults,
+            canSeeForklift: _memberCanSeeP2HForkliftResults,
+            canSeeTruckHauling: _memberCanSeeP2HTruckHaulingResults,
+            canSeeWaterTruck: _memberCanSeeP2HWaterTruckResults,
+            canSeeWheelLoader: _memberCanSeeP2HWheelLoaderResults,
+            canSeeWaterPump: _memberCanSeeP2HWaterPumpResults,
+            canSeeServiceTruck: _memberCanSeeP2HServiceTruckResults,
+            canSeeCompactor: _memberCanSeeP2HCompactorResults,
+            canSeeFuelTruck: _memberCanSeeP2HFuelTruckResults,
+            userRole: _currentRole,
+          ),
+        },
+      if (role == "admin" ||
+          role == "superadmin" ||
+          (role == "member" && _memberCanSeeP5MResults))
+        {
+          "icon": Icons.table_chart_rounded,
+          "label": "P5M Results",
+          "roles": ["admin", "superadmin", "member"],
+          "page": P5MResultPage(),
+        },
+      if (role == "admin" ||
+          role == "superadmin" ||
+          (role == "member" && _memberCanSeeAnyEventResults))
+        {
+          "icon": Icons.event_sharp,
+          "label": "Events",
+          "roles": ["admin", "superadmin", "member"],
+          "page": EventPage(
+            canSeeDailyPlan: _memberCanSeeDailyPlanResults,
+            canSeeBuletin: _memberCanSeeBuletinResults,
+            canSeeTraining: _memberCanSeeTrainingResults,
+            userRole: _currentRole,
+          ),
+        },
     ];
   }
 
   List<Map<String, dynamic>> get filteredDrawerMenus {
-    final role = widget.role.toLowerCase().trim();
-
-    if (role == "superadmin") return drawerMenus;
+    final role = _currentRole.toLowerCase().trim();
 
     return drawerMenus.where((menu) {
+      if (!menu.containsKey("roles")) return true;
+
       final roles = (menu["roles"] as List)
           .map((r) => r.toLowerCase())
           .toList();
+
       return roles.contains(role);
     }).toList();
   }
 
   final _storage = const FlutterSecureStorage();
 
+  String get _currentName => AuthSession.name ?? widget.name;
+  String get _currentSite => AuthSession.siteName ?? widget.site;
+  String get _currentDepartment =>
+      AuthSession.departmentName ?? widget.department;
+  String get _currentRole => AuthSession.role ?? widget.role;
+  String get _currentEmail => AuthSession.email ?? "-";
+  String get _currentEmployeeId => AuthSession.employeeId ?? "-";
+
   Future<void> handleLogout() async {
     if (_isLoggingOut) return;
 
     setState(() => _isLoggingOut = true);
     _sessionTimer?.cancel();
+
+    AuthSession.isManualLogout = true;
 
     try {
       final res = await ApiClient.post("/logout");
@@ -274,8 +564,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     } catch (e) {
       debugPrint("Logout error: $e");
     } finally {
-      if (mounted && Navigator.of(context, rootNavigator: true).canPop()) {
-        Navigator.of(context, rootNavigator: true).pop();
+      if (mounted && Navigator.of(context).canPop()) {
+        Navigator.of(context).pop();
       }
 
       await _storage.deleteAll();
@@ -410,6 +700,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
     if (state == AppLifecycleState.resumed) {
       _loadUnreadCount();
+
+      if (_currentRole.toLowerCase().trim() == "member") {
+        _loadMemberExcelAccess();
+      }
+
       Future.microtask(() async {
         try {
           await ApiClient.get("/profile");
@@ -423,6 +718,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   @override
   void dispose() {
     _sessionTimer?.cancel();
+    PermissionRefresh.excelAccessVersion.removeListener(
+      _handleExcelAccessRefresh,
+    );
+
     WidgetsBinding.instance.removeObserver(this);
     searchController.dispose();
     super.dispose();
@@ -432,6 +731,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      extendBody: true,
       backgroundColor: const Color(0xffeef2f7),
       appBar: _buildAppBar(),
       drawer: _buildDrawer(context),
@@ -468,6 +768,13 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
             ),
           ),
         ),
+      ),
+      bottomNavigationBar: AppBottomNav(
+        currentIndex: 0,
+        role: _currentRole,
+        site: _currentSite,
+        department: _currentDepartment,
+        name: _currentName,
       ),
     );
   }
@@ -511,7 +818,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
               ),
               const SizedBox(height: 2),
               Text(
-                widget.site.toUpperCase(),
+                _currentSite.toUpperCase(),
                 style: const TextStyle(
                   fontSize: 13,
                   fontWeight: FontWeight.w500,
@@ -528,10 +835,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                   context,
                   MaterialPageRoute(
                     builder: (_) => NotificationsPage(
-                      name: widget.name,
-                      site: widget.site,
-                      department: widget.department,
-                      role: widget.role,
+                      name: _currentName,
+                      site: _currentSite,
+                      department: _currentDepartment,
+                      role: _currentRole,
+                      email: _currentEmail,
+                      employeeId: _currentEmployeeId,
                     ),
                   ),
                 );
@@ -676,30 +985,15 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     );
   }
 
-  Widget _drawerSectionTitle(String title) {
-    return Padding(
-      padding: const EdgeInsets.only(left: 4),
-      child: Text(
-        title.toUpperCase(),
-        style: TextStyle(
-          fontSize: 11,
-          letterSpacing: 1.2,
-          fontWeight: FontWeight.w800,
-          color: Colors.grey.shade600,
-        ),
-      ),
-    );
-  }
-
   Widget _buildDrawerHeader(BuildContext context) {
-    final role = widget.role.toLowerCase().trim();
+    final role = _currentRole.toLowerCase().trim();
 
     Color roleColor() {
       switch (role) {
         case "superadmin":
-          return const Color(0xFFFFC107);
-        case "admin":
           return const Color(0xFF00D1B2);
+        case "admin":
+          return const Color(0xFFFFC107);
         default:
           return const Color(0xFFB3E5FC);
       }
@@ -812,11 +1106,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                       context,
                       MaterialPageRoute(
                         builder: (_) => ProfilePage(
-                          site: widget.site,
-                          department: widget.department,
-                          name: widget.name,
-                          email: AuthSession.email ?? "-",
-                          employeeId: AuthSession.employeeId ?? "-",
+                          site: _currentSite,
+                          department: _currentDepartment,
+                          name: _currentName,
+                          email: _currentEmail,
+                          employeeId: _currentEmployeeId,
                         ),
                       ),
                     );
@@ -852,7 +1146,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Text(
-                                widget.name,
+                                _currentName,
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                                 style: const TextStyle(
@@ -863,7 +1157,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                               ),
                               const SizedBox(height: 4),
                               Text(
-                                "${widget.department} • ${widget.site}",
+                                "$_currentDepartment • $_currentSite",
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                                 style: const TextStyle(

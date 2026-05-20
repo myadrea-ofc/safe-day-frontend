@@ -7,6 +7,10 @@ class AuthSession {
   static int? departmentId;
   static String? email;
   static String? employeeId;
+  static String? siteName;
+  static String? departmentName;
+
+  static bool isManualLogout = false;
 
   static bool isReady = false;
 
@@ -25,6 +29,7 @@ class AuthSession {
   }
 
   static void clear() {
+    name = null;
     token = null;
     role = null;
     userId = null;
@@ -32,6 +37,8 @@ class AuthSession {
     departmentId = null;
     email = null;
     employeeId = null;
+    siteName = null;
+    departmentName = null;
     isReady = false;
   }
 }

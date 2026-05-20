@@ -1,4 +1,3 @@
-import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:safety_apps/models/buletin.dart';
@@ -33,8 +32,7 @@ Future<Buletin?> showBuletinDialog(
       selectedSiteIds = isForAllSites ? [] : List<int>.from(buletin.siteIds);
     }
   }
-
-  File? imageFile;
+  XFile? imageFile;
 
   bool isNew = buletin == null;
   bool isFieldFilled() {
@@ -145,7 +143,7 @@ Future<Buletin?> showBuletinDialog(
                                 ),
                                 Switch(
                                   value: isForAllSites,
-                                  activeColor: const Color(0xff1d63ff),
+                                  activeThumbColor: const Color(0xff1d63ff),
                                   onChanged: (val) {
                                     setState(() {
                                       isForAllSites = val;
@@ -231,8 +229,9 @@ Future<Buletin?> showBuletinDialog(
                             final picked = await ImagePicker().pickImage(
                               source: ImageSource.gallery,
                             );
+
                             if (picked != null) {
-                              imageFile = File(picked.path);
+                              imageFile = picked;
                               imgCtrl.text = picked.name;
                               setState(() {});
                             }

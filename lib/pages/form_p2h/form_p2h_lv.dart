@@ -1,25 +1,30 @@
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:intl/intl.dart';
+import 'package:safety_apps/models/dropdown_item.dart';
 import 'package:safety_apps/service/p2h/p2h_lv_service.dart';
+import 'package:safety_apps/service/pending/pending_form_helper.dart';
+import 'package:safety_apps/service/pending/retry_submit_helper.dart';
 import 'package:safety_apps/session/auth_session.dart';
 import 'package:safety_apps/widgets/checkbox/checkbox_form.dart';
 import 'package:safety_apps/widgets/checkbox/checkbox_other.dart';
 import 'package:safety_apps/widgets/date_field.dart';
-import 'package:safety_apps/widgets/dropdown/dropdown_department.dart';
-import 'package:safety_apps/widgets/dropdown/dropdown_jabatan.dart';
-import 'package:safety_apps/widgets/dropdown/no_unit/dropdown_no_lv.dart';
-import 'package:safety_apps/widgets/dropdown/dropdown_perusahaan.dart';
 import 'package:safety_apps/widgets/image_comprssor.dart';
 import 'package:safety_apps/widgets/input/input_field.dart';
 import 'package:safety_apps/widgets/label_text.dart';
 import 'package:safety_apps/widgets/opsi/opsi_row.dart';
 import 'package:safety_apps/widgets/opsi/opsi_row3_ltna.dart';
 import 'package:safety_apps/widgets/opsi/opsi_row3_ltna2.dart';
+import 'package:safety_apps/widgets/result/status_pending_dialog.dart';
+import 'package:safety_apps/widgets/search_dropdown.dart';
+import 'package:safety_apps/widgets/submit_loading_dialog.dart';
 import 'package:safety_apps/widgets/upload_box.dart';
+import 'package:safety_apps/widgets/validation_error_dialog.dart';
 
 class FormP2HLV extends StatefulWidget {
   @override
@@ -32,11 +37,26 @@ class _FormP2HLVPageState extends State<FormP2HLV> {
   TextEditingController laporan_temuan = TextEditingController();
   TextEditingController tanggal = TextEditingController();
 
-  String? department;
-  String? jabatan;
-  String? perusahaan;
+  @override
+  void dispose() {
+    nama.dispose();
+    lv_sekarang.dispose();
+    laporan_temuan.dispose();
+    tanggal.dispose();
+    _submitProgressText.dispose();
+    super.dispose();
+  }
+
+  DropdownItemModel? selectedDepartment;
+  DropdownItemModel? selectedPerusahaan;
+  DropdownItemModel? selectedNoLambungUnit;
+  DropdownItemModel? selectedJabatan;
+
+  String? departmentManual;
+  String? perusahaanManual;
+  String? noLambungUnitManual;
+  String? jabatanManual;
   String? brandUnit;
-  String? noLambungUnit;
 
   String? opsiitem1;
   String? opsiitem2;
@@ -85,11 +105,22 @@ class _FormP2HLVPageState extends State<FormP2HLV> {
 
   List<XFile> selectedDokumen = [];
 
+  List<Uint8List> selectedDokumenBytes = [];
+  List<String> selectedDokumenNames = [];
+
   bool _isSubmitting = false;
+
+  static const int _maxAutoRetry = 3;
+  static const Duration _submitTimeout = Duration(seconds: 15);
+  static const Duration _retryDelay = Duration(seconds: 1);
+
+  final ValueNotifier<String> _submitProgressText = ValueNotifier(
+    "Mengirim data P2H...",
+  );
 
   static const fNama = "Nama";
   static const fLVSekarang = "HM LV anda saat ini";
-  static const fBrandUnit = "HM LV anda saat ini";
+  static const fBrandUnit = "Brand Unit";
   static const fJabatan = "Jabatan";
   static const fDepartment = "Department";
   static const fPerusahaan = "Perusahaan";
@@ -133,15 +164,37 @@ class _FormP2HLVPageState extends State<FormP2HLV> {
     if (nama.text.trim().isEmpty) missing.add(fNama);
     if (lv_sekarang.text.trim().isEmpty) missing.add(fLVSekarang);
     if (laporan_temuan.text.trim().isEmpty) missing.add(fLaporanTemuan);
-    if (jabatan == null) missing.add(fJabatan);
-    if (department == null) missing.add(fDepartment);
-    if (perusahaan == null) missing.add(fPerusahaan);
-    if (noLambungUnit == null) missing.add(fNoLambungUnit);
     if (brandUnit == null) missing.add(fBrandUnit);
     if (tanggal.text.isEmpty) missing.add(fTanggal);
     if (shift_kerja == null) missing.add(fShiftKerja);
     if (jam_tidur == null) missing.add(fJamTidur);
+    if (selectedDepartment == null) {
+      missing.add(fDepartment);
+    } else if (selectedDepartment!.isOther &&
+        (departmentManual == null || departmentManual!.trim().isEmpty)) {
+      missing.add(fDepartment);
+    }
 
+    if (selectedNoLambungUnit == null) {
+      missing.add(fNoLambungUnit);
+    } else if (selectedNoLambungUnit!.isOther &&
+        (noLambungUnitManual == null || noLambungUnitManual!.trim().isEmpty)) {
+      missing.add(fNoLambungUnit);
+    }
+
+    if (selectedPerusahaan == null) {
+      missing.add(fPerusahaan);
+    } else if (selectedPerusahaan!.isOther &&
+        (perusahaanManual == null || perusahaanManual!.trim().isEmpty)) {
+      missing.add(fPerusahaan);
+    }
+
+    if (selectedJabatan == null) {
+      missing.add(fJabatan);
+    } else if (selectedJabatan!.isOther &&
+        (jabatanManual == null || jabatanManual!.trim().isEmpty)) {
+      missing.add(fJabatan);
+    }
     _opsiMap.forEach((i, v) {
       if (v == null || v.isEmpty) {
         missing.add("$fOpsiPrefix $i");
@@ -231,6 +284,200 @@ class _FormP2HLVPageState extends State<FormP2HLV> {
     return ['.jpg', '.jpeg', '.png', '.heic'].any(ext.endsWith);
   }
 
+  Future<List<File>> _processFilesForSubmit() async {
+    if (kIsWeb) return [];
+
+    const maxFileSize = 5 * 1024 * 1024;
+    List<File> processedFiles = [];
+
+    for (final picked in selectedDokumen) {
+      final file = File(picked.path);
+
+      if (isImageFile(file.path)) {
+        final compressed = await ImageCompressor.compressIfNeeded(file);
+
+        if (compressed.lengthSync() > maxFileSize) {
+          throw Exception("Gagal mengompres ${picked.name}");
+        }
+
+        processedFiles.add(compressed);
+      } else {
+        if (file.lengthSync() > maxFileSize) {
+          throw Exception("File ${picked.name} melebihi 5 MB");
+        }
+
+        processedFiles.add(file);
+      }
+    }
+
+    return processedFiles;
+  }
+
+  Map<String, dynamic> _buildPayload({required List<String> filePaths}) {
+    return {
+      'nama': nama.text,
+      'jabatan': selectedJabatan?.isOther == true
+          ? (jabatanManual ?? "")
+          : (selectedJabatan?.label ?? ""),
+      'department': selectedDepartment?.isOther == true
+          ? (departmentManual ?? "")
+          : (selectedDepartment?.label ?? ""),
+      'noLambungUnit': selectedNoLambungUnit?.isOther == true
+          ? (noLambungUnitManual ?? "")
+          : (selectedNoLambungUnit?.label ?? ""),
+      'perusahaan': selectedPerusahaan?.isOther == true
+          ? (perusahaanManual ?? "")
+          : (selectedPerusahaan?.label ?? ""),
+      'tanggal': tanggal.text,
+      'brandUnit': brandUnit ?? "",
+      'lvSekarang': lv_sekarang.text,
+      'shiftKerja': shift_kerja ?? "",
+
+      'opsiitem1': opsiitem1 ?? "",
+      'opsiitem2': opsiitem2 ?? "",
+      'opsiitem3': opsiitem3 ?? "",
+      'opsiitem4': opsiitem4 ?? "",
+      'opsiitem5': opsiitem5 ?? "",
+      'opsiitem6': opsiitem6 ?? "",
+      'opsiitem7': opsiitem7 ?? "",
+      'opsiitem8': opsiitem8 ?? "",
+      'opsiitem9': opsiitem9 ?? "",
+      'opsiitem10': opsiitem10 ?? "",
+      'opsiitem11': opsiitem11 ?? "",
+      'opsiitem12': opsiitem12 ?? "",
+      'opsiitem13': opsiitem13 ?? "",
+      'opsiitem14': opsiitem14 ?? "",
+      'opsiitem15': opsiitem15 ?? "",
+      'opsiitem16': opsiitem16 ?? "",
+      'opsiitem17': opsiitem17 ?? "",
+      'opsiitem18': opsiitem18 ?? "",
+      'opsiitem19': opsiitem19 ?? "",
+
+      'opsiStandardKeselamatan1': opsistandardkeselamatan1 ?? "",
+      'opsiStandardKeselamatan2': opsistandardkeselamatan2 ?? "",
+      'opsiStandardKeselamatan3': opsistandardkeselamatan3 ?? "",
+      'opsiStandardKeselamatan4': opsistandardkeselamatan4 ?? "",
+      'opsiStandardKeselamatan5': opsistandardkeselamatan5 ?? "",
+
+      'opsiStandardMasukTambang1': opsistandardmasuktambang1 ?? "",
+      'opsiStandardMasukTambang2': opsistandardmasuktambang2 ?? "",
+      'opsiStandardMasukTambang3': opsistandardmasuktambang3 ?? "",
+      'opsiStandardMasukTambang4': opsistandardmasuktambang4 ?? "",
+      'opsiStandardMasukTambang5': opsistandardmasuktambang5 ?? "",
+      'opsiStandardMasukTambang6': opsistandardmasuktambang6 ?? "",
+      'opsiStandardMasukTambang7': opsistandardmasuktambang7 ?? "",
+
+      'laporanTemuan': laporan_temuan.text,
+      'jamTidur': jam_tidur ?? "",
+
+      'statusKeadaan1': status_keadaan1 ?? "",
+      'statusKeadaan2': status_keadaan2 ?? "",
+      'statusKeadaan3': status_keadaan3 ?? "",
+      'statusKeadaan4': status_keadaan4 ?? "",
+      'statusKeadaan5': status_keadaan5 ?? "",
+      'statusKeadaan6': status_keadaan6 ?? "",
+
+      'statusSiap': status_siap ?? "",
+
+      'filePaths': filePaths,
+    };
+  }
+
+  Future<bool> _submitOnce(Map<String, dynamic> payload) async {
+    return await P2HLVService.submitP2HLV(
+      nama: (payload['nama'] ?? '').toString().trim(),
+      jabatan: (payload['jabatan'] ?? '').toString().trim(),
+      department: (payload['department'] ?? '').toString().trim(),
+      noLambungUnit: (payload['noLambungUnit'] ?? '').toString().trim(),
+      perusahaan: (payload['perusahaan'] ?? '').toString().trim(),
+      tanggal: (payload['tanggal'] ?? '').toString().trim(),
+      brandUnit: (payload['brandUnit'] ?? '').toString().trim(),
+      lvSekarang: (payload['lvSekarang'] ?? '').toString().trim(),
+      shiftKerja: (payload['shiftKerja'] ?? '').toString().trim(),
+
+      opsiitem1: (payload['opsiitem1'] ?? '').toString().trim(),
+      opsiitem2: (payload['opsiitem2'] ?? '').toString().trim(),
+      opsiitem3: (payload['opsiitem3'] ?? '').toString().trim(),
+      opsiitem4: (payload['opsiitem4'] ?? '').toString().trim(),
+      opsiitem5: (payload['opsiitem5'] ?? '').toString().trim(),
+      opsiitem6: (payload['opsiitem6'] ?? '').toString().trim(),
+      opsiitem7: (payload['opsiitem7'] ?? '').toString().trim(),
+      opsiitem8: (payload['opsiitem8'] ?? '').toString().trim(),
+      opsiitem9: (payload['opsiitem9'] ?? '').toString().trim(),
+      opsiitem10: (payload['opsiitem10'] ?? '').toString().trim(),
+      opsiitem11: (payload['opsiitem11'] ?? '').toString().trim(),
+      opsiitem12: (payload['opsiitem12'] ?? '').toString().trim(),
+      opsiitem13: (payload['opsiitem13'] ?? '').toString().trim(),
+      opsiitem14: (payload['opsiitem14'] ?? '').toString().trim(),
+      opsiitem15: (payload['opsiitem15'] ?? '').toString().trim(),
+      opsiitem16: (payload['opsiitem16'] ?? '').toString().trim(),
+      opsiitem17: (payload['opsiitem17'] ?? '').toString().trim(),
+      opsiitem18: (payload['opsiitem18'] ?? '').toString().trim(),
+      opsiitem19: (payload['opsiitem19'] ?? '').toString().trim(),
+
+      opsiStandardKeselamatan1: (payload['opsiStandardKeselamatan1'] ?? '')
+          .toString()
+          .trim(),
+      opsiStandardKeselamatan2: (payload['opsiStandardKeselamatan2'] ?? '')
+          .toString()
+          .trim(),
+      opsiStandardKeselamatan3: (payload['opsiStandardKeselamatan3'] ?? '')
+          .toString()
+          .trim(),
+      opsiStandardKeselamatan4: (payload['opsiStandardKeselamatan4'] ?? '')
+          .toString()
+          .trim(),
+      opsiStandardKeselamatan5: (payload['opsiStandardKeselamatan5'] ?? '')
+          .toString()
+          .trim(),
+
+      opsiStandardMasukTambang1: (payload['opsiStandardMasukTambang1'] ?? '')
+          .toString()
+          .trim(),
+      opsiStandardMasukTambang2: (payload['opsiStandardMasukTambang2'] ?? '')
+          .toString()
+          .trim(),
+      opsiStandardMasukTambang3: (payload['opsiStandardMasukTambang3'] ?? '')
+          .toString()
+          .trim(),
+      opsiStandardMasukTambang4: (payload['opsiStandardMasukTambang4'] ?? '')
+          .toString()
+          .trim(),
+      opsiStandardMasukTambang5: (payload['opsiStandardMasukTambang5'] ?? '')
+          .toString()
+          .trim(),
+      opsiStandardMasukTambang6: (payload['opsiStandardMasukTambang6'] ?? '')
+          .toString()
+          .trim(),
+      opsiStandardMasukTambang7: (payload['opsiStandardMasukTambang7'] ?? '')
+          .toString()
+          .trim(),
+
+      laporanTemuan: (payload['laporanTemuan'] ?? '').toString().trim(),
+      filePaths: kIsWeb
+          ? []
+          : List<String>.from(payload['filePaths'] ?? const []),
+      fileBytesList: kIsWeb ? selectedDokumenBytes : [],
+      fileNames: kIsWeb ? selectedDokumenNames : [],
+      jamTidur: (payload['jamTidur'] ?? '').toString().trim(),
+
+      statusKeadaan1: (payload['statusKeadaan1'] ?? '').toString().trim(),
+      statusKeadaan2: (payload['statusKeadaan2'] ?? '').toString().trim(),
+      statusKeadaan3: (payload['statusKeadaan3'] ?? '').toString().trim(),
+      statusKeadaan4: (payload['statusKeadaan4'] ?? '').toString().trim(),
+      statusKeadaan5: (payload['statusKeadaan5'] ?? '').toString().trim(),
+      statusKeadaan6: (payload['statusKeadaan6'] ?? '').toString().trim(),
+
+      statusSiap: (payload['statusSiap'] ?? '').toString().trim(),
+    ).timeout(
+      _submitTimeout,
+      onTimeout: () {
+        debugPrint("SUBMIT P2H LV TIMEOUT");
+        return false;
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -243,7 +490,7 @@ class _FormP2HLVPageState extends State<FormP2HLV> {
           flexibleSpace: Container(
             decoration: const BoxDecoration(
               gradient: LinearGradient(
-                colors: [Color(0xffFF5F6D), Color(0xffFF7A45)],
+                colors: [Color(0xff1d63ff), Color(0xff4fa9ff)],
                 begin: Alignment.topLeft,
                 end: Alignment.bottomRight,
               ),
@@ -271,7 +518,7 @@ class _FormP2HLVPageState extends State<FormP2HLV> {
               padding: const EdgeInsets.all(22),
               decoration: BoxDecoration(
                 gradient: const LinearGradient(
-                  colors: [Color(0xffFF7A45), Color(0xffFF5F6D)],
+                  colors: [Color(0xff1d63ff), Color(0xff4fa9ff)],
                 ),
                 borderRadius: BorderRadius.circular(18),
                 boxShadow: [
@@ -333,38 +580,47 @@ class _FormP2HLVPageState extends State<FormP2HLV> {
                     readOnly: true,
                   ),
 
-                  LabelText(
-                    fJabatan,
+                  SearchableMasterDropdown(
+                    label: fJabatan,
+                    hint: "Pilih Jabatan",
+                    endpoint: "master/jabatan",
+                    selectedValue: selectedJabatan,
                     showError: _missingFields.contains(fJabatan),
-                  ),
-                  DropdownJabatan(
-                    value: jabatan,
-                    onChanged: (v) {
-                      setState(() => jabatan = v);
+                    onChanged: (selected, manualValue) {
+                      setState(() {
+                        selectedJabatan = selected;
+                        jabatanManual = manualValue;
+                      });
                       _clearMissing(fJabatan);
                     },
                   ),
 
-                  LabelText(
-                    fDepartment,
+                  SearchableMasterDropdown(
+                    label: fDepartment,
+                    hint: "Pilih Department",
+                    endpoint: "master/department",
+                    selectedValue: selectedDepartment,
                     showError: _missingFields.contains(fDepartment),
-                  ),
-                  DropdownDepartment(
-                    value: department,
-                    onChanged: (v) {
-                      setState(() => department = v);
+                    onChanged: (selected, manualValue) {
+                      setState(() {
+                        selectedDepartment = selected;
+                        departmentManual = manualValue;
+                      });
                       _clearMissing(fDepartment);
                     },
                   ),
 
-                  LabelText(
-                    fPerusahaan,
+                  SearchableMasterDropdown(
+                    label: fPerusahaan,
+                    hint: "Pilih Perusahaan",
+                    endpoint: "master/perusahaan",
+                    selectedValue: selectedPerusahaan,
                     showError: _missingFields.contains(fPerusahaan),
-                  ),
-                  DropdownPerusahaan(
-                    value: perusahaan,
-                    onChanged: (v) {
-                      setState(() => perusahaan = v);
+                    onChanged: (selected, manualValue) {
+                      setState(() {
+                        selectedPerusahaan = selected;
+                        perusahaanManual = manualValue;
+                      });
                       _clearMissing(fPerusahaan);
                     },
                   ),
@@ -392,14 +648,17 @@ class _FormP2HLVPageState extends State<FormP2HLV> {
                     },
                   ),
 
-                  LabelText(
-                    fNoLambungUnit,
+                  SearchableMasterDropdown(
+                    label: fNoLambungUnit,
+                    hint: "Pilih No Lambung Unit",
+                    endpoint: "master/no-lambung-unit?unit_id=16",
                     showError: _missingFields.contains(fNoLambungUnit),
-                  ),
-                  DropdownNoLambungLV(
-                    value: noLambungUnit,
-                    onChanged: (v) {
-                      setState(() => noLambungUnit = v);
+                    selectedValue: selectedNoLambungUnit,
+                    onChanged: (selected, manualValue) {
+                      setState(() {
+                        selectedNoLambungUnit = selected;
+                        noLambungUnitManual = manualValue;
+                      });
                       _clearMissing(fNoLambungUnit);
                     },
                   ),
@@ -847,9 +1106,7 @@ class _FormP2HLVPageState extends State<FormP2HLV> {
                   UploadBox(
                     text: selectedDokumen.isEmpty
                         ? "Pilih Dokumen (Maks 5 File)"
-                        : selectedDokumen
-                              .map((f) => f.path.split("/").last)
-                              .join(", "),
+                        : selectedDokumen.map((f) => f.name).join(", "),
                     icon: Icons.attach_file_rounded,
                     onTap: pickFile,
                   ),
@@ -963,7 +1220,7 @@ class _FormP2HLVPageState extends State<FormP2HLV> {
                         gradient: _isSubmitting
                             ? null
                             : LinearGradient(
-                                colors: [Color(0xffFF5F6D), Color(0xffFF7A45)],
+                                colors: [Color(0xff1d63ff), Color(0xff4fa9ff)],
                               ),
                         color: _isSubmitting ? Colors.grey : null,
                         borderRadius: BorderRadius.circular(10),
@@ -1022,12 +1279,15 @@ class _FormP2HLVPageState extends State<FormP2HLV> {
     final result = await FilePicker.platform.pickFiles(
       allowMultiple: true,
       type: FileType.custom,
+      withData: kIsWeb,
       allowedExtensions: [
         'pdf',
         'doc',
         'docx',
         'xls',
         'xlsx',
+        'csv',
+        'txt',
         'png',
         'jpg',
         'jpeg',
@@ -1046,6 +1306,7 @@ class _FormP2HLVPageState extends State<FormP2HLV> {
 
     const hardLimit = 10 * 1024 * 1024;
     final invalid = result.files.where((f) => f.size > hardLimit).toList();
+
     if (invalid.isNotEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -1054,10 +1315,44 @@ class _FormP2HLVPageState extends State<FormP2HLV> {
       );
       return;
     }
-    setState(() {
-      selectedDokumen = result.paths.map((p) => XFile(p!)).toList();
-      _clearMissing(fDokumen);
-    });
+
+    if (kIsWeb) {
+      final filesWithoutBytes = result.files
+          .where((f) => f.bytes == null)
+          .toList();
+
+      if (filesWithoutBytes.isNotEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text("File gagal dibaca di Web, silakan pilih ulang"),
+          ),
+        );
+        return;
+      }
+
+      setState(() {
+        selectedDokumen = result.files
+            .map((f) => XFile.fromData(f.bytes!, name: f.name))
+            .toList();
+
+        selectedDokumenBytes = result.files.map((f) => f.bytes!).toList();
+        selectedDokumenNames = result.files.map((f) => f.name).toList();
+
+        _clearMissing(fDokumen);
+      });
+    } else {
+      setState(() {
+        selectedDokumen = result.paths
+            .where((p) => p != null)
+            .map((p) => XFile(p!))
+            .toList();
+
+        selectedDokumenBytes = [];
+        selectedDokumenNames = result.files.map((f) => f.name).toList();
+
+        _clearMissing(fDokumen);
+      });
+    }
   }
 
   void submitP2HLV() async {
@@ -1070,274 +1365,114 @@ class _FormP2HLVPageState extends State<FormP2HLV> {
     });
 
     if (missing.isNotEmpty) {
-      showDialog(
+      await ValidationErrorDialog.show(
         context: context,
-        builder: (_) => Dialog(
-          backgroundColor: Colors.transparent,
-          insetPadding: const EdgeInsets.symmetric(horizontal: 24),
-          child: Container(
-            padding: const EdgeInsets.all(22),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(22),
-              boxShadow: [
-                BoxShadow(
-                  blurRadius: 20,
-                  color: Colors.black.withOpacity(0.15),
-                  offset: const Offset(0, 6),
-                ),
-              ],
-            ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 14,
-                  ),
-                  decoration: BoxDecoration(
-                    gradient: const LinearGradient(
-                      colors: [Color(0xffFF5F6D), Color(0xffFF7A45)],
-                    ),
-                    borderRadius: BorderRadius.circular(14),
-                  ),
-                  child: Row(
-                    children: const [
-                      Icon(
-                        Icons.warning_amber_rounded,
-                        color: Colors.white,
-                        size: 26,
-                      ),
-                      SizedBox(width: 10),
-                      Expanded(
-                        child: Text(
-                          "Data Belum Lengkap",
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontWeight: FontWeight.bold,
-                            fontSize: 16,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 18),
-                const Text(
-                  "Field berikut masih kosong:",
-                  style: TextStyle(
-                    fontWeight: FontWeight.w600,
-                    color: Colors.black87,
-                  ),
-                ),
-                const SizedBox(height: 10),
-                Container(
-                  constraints: const BoxConstraints(maxHeight: 200),
-                  child: SingleChildScrollView(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: missing
-                          .map(
-                            (e) => Padding(
-                              padding: const EdgeInsets.symmetric(vertical: 3),
-                              child: Row(
-                                children: [
-                                  const Icon(
-                                    Icons.circle,
-                                    size: 7,
-                                    color: Colors.redAccent,
-                                  ),
-                                  const SizedBox(width: 8),
-                                  Expanded(
-                                    child: Text(
-                                      e,
-                                      style: const TextStyle(fontSize: 14),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          )
-                          .toList(),
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 20),
-                SizedBox(
-                  width: double.infinity,
-                  child: ElevatedButton(
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xffFF6A55),
-                      padding: const EdgeInsets.symmetric(vertical: 14),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                    ),
-                    onPressed: () => Navigator.pop(context),
-                    child: const Text(
-                      "Mengerti",
-                      style: TextStyle(color: Colors.white),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
+        missingFields: missing,
       );
       return;
     }
 
-    late BuildContext loadingCtx;
+    setState(() => _isSubmitting = true);
 
-    showDialog(
+    _submitProgressText.value = "Memproses file...";
+
+    SubmitLoadingDialog.show(
       context: context,
-      barrierDismissible: false,
-      builder: (ctx) {
-        loadingCtx = ctx;
-        return Dialog(
-          backgroundColor: Colors.white,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(16),
-          ),
-          child: Padding(
-            padding: const EdgeInsets.all(20),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: const [
-                CircularProgressIndicator(),
-                SizedBox(width: 20),
-                Text("Mengirim data P2H..."),
-              ],
-            ),
-          ),
-        );
-      },
+      messageNotifier: _submitProgressText,
     );
 
-    setState(() => _isSubmitting = true);
-    const maxFileSize = 5 * 1024 * 1024;
     List<File> processedFiles = [];
 
     try {
-      for (final picked in selectedDokumen) {
-        final file = File(picked.path);
-
-        if (isImageFile(file.path)) {
-          final compressed = await ImageCompressor.compressIfNeeded(file);
-
-          if (compressed.lengthSync() > maxFileSize) {
-            throw Exception("Gagal mengompres ${picked.name}");
-          }
-          processedFiles.add(compressed);
-        } else {
-          if (file.lengthSync() > maxFileSize) {
-            throw Exception("File ${picked.name} melebihi 5 MB");
-          }
-          processedFiles.add(file);
-        }
-      }
+      processedFiles = await _processFilesForSubmit();
     } catch (e) {
       if (!mounted) return;
 
-      Navigator.pop(loadingCtx);
+      SubmitLoadingDialog.close(context);
+
       setState(() => _isSubmitting = false);
 
-      showDialog(
+      StatusDialog.show(
         context: context,
-        builder: (_) => AlertDialog(
-          title: const Text("Upload Gagal"),
-          content: Text(e.toString()),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text("OK"),
-            ),
-          ],
-        ),
+        type: StatusDialogType.error,
+        title: "Upload Gagal",
+        message: e.toString(),
+        onDone: () => Navigator.pop(context),
       );
       return;
     }
+    final filePaths = kIsWeb
+        ? <String>[]
+        : processedFiles.map((e) => e.path).toList();
+
+    final payload = _buildPayload(filePaths: filePaths);
 
     bool ok = false;
+    bool savedToPending = false;
 
     try {
-      ok = await P2HLVService.submitP2HLV(
-        nama: nama.text,
-        jabatan: jabatan ?? "",
-        department: department ?? "",
-        perusahaan: perusahaan ?? "",
-        tanggal: tanggal.text,
-        brandUnit: brandUnit ?? "",
-        noLambungUnit: noLambungUnit ?? "",
-        lvSekarang: lv_sekarang.text,
-        shiftKerja: shift_kerja ?? "",
+      ok = await RetrySubmitHelper.run(
+        maxRetry: _maxAutoRetry,
+        retryDelay: _retryDelay,
+        onProgress: (attempt, maxRetry) {
+          if (!mounted) return;
 
-        opsiitem1: opsiitem1 ?? "",
-        opsiitem2: opsiitem2 ?? "",
-        opsiitem3: opsiitem3 ?? "",
-        opsiitem4: opsiitem4 ?? "",
-        opsiitem5: opsiitem5 ?? "",
-        opsiitem6: opsiitem6 ?? "",
-        opsiitem7: opsiitem7 ?? "",
-        opsiitem8: opsiitem8 ?? "",
-        opsiitem9: opsiitem9 ?? "",
-        opsiitem19: opsiitem19 ?? "",
-        opsiitem10: opsiitem10 ?? "",
-        opsiitem11: opsiitem11 ?? "",
-        opsiitem12: opsiitem12 ?? "",
-        opsiitem13: opsiitem13 ?? "",
-        opsiitem14: opsiitem14 ?? "",
-        opsiitem15: opsiitem15 ?? "",
-        opsiitem16: opsiitem16 ?? "",
-        opsiitem17: opsiitem17 ?? "",
-        opsiitem18: opsiitem18 ?? "",
-
-        opsiStandardKeselamatan1: opsistandardkeselamatan1 ?? "",
-        opsiStandardKeselamatan2: opsistandardkeselamatan2 ?? "",
-        opsiStandardKeselamatan3: opsistandardkeselamatan3 ?? "",
-        opsiStandardKeselamatan4: opsistandardkeselamatan4 ?? "",
-        opsiStandardKeselamatan5: opsistandardkeselamatan5 ?? "",
-
-        opsiStandardMasukTambang1: opsistandardmasuktambang1 ?? "",
-        opsiStandardMasukTambang2: opsistandardmasuktambang2 ?? "",
-        opsiStandardMasukTambang3: opsistandardmasuktambang3 ?? "",
-        opsiStandardMasukTambang4: opsistandardmasuktambang4 ?? "",
-        opsiStandardMasukTambang5: opsistandardmasuktambang5 ?? "",
-        opsiStandardMasukTambang6: opsistandardmasuktambang6 ?? "",
-        opsiStandardMasukTambang7: opsistandardmasuktambang7 ?? "",
-
-        laporanTemuan: laporan_temuan.text,
-        filePaths: processedFiles.map((f) => f.path).toList(),
-        jamTidur: jam_tidur ?? "",
-
-        statusKeadaan1: status_keadaan1 ?? "",
-        statusKeadaan2: status_keadaan2 ?? "",
-        statusKeadaan3: status_keadaan3 ?? "",
-        statusKeadaan4: status_keadaan4 ?? "",
-        statusKeadaan5: status_keadaan5 ?? "",
-        statusKeadaan6: status_keadaan6 ?? "",
-
-        statusSiap: status_siap ?? "",
+          _submitProgressText.value = attempt == 1
+              ? "Mengirim data P2H..."
+              : "Mengirim ulang... percobaan $attempt dari $maxRetry";
+        },
+        action: () => _submitOnce(payload),
       );
+
+      if (!ok) {
+        await PendingFormHelper.saveP2HLV(
+          payload: payload,
+          filePaths: filePaths,
+        );
+        savedToPending = true;
+      }
     } catch (_) {
-      ok = false;
+      await PendingFormHelper.saveP2HLV(payload: payload, filePaths: filePaths);
+      savedToPending = true;
     }
 
     if (!mounted) return;
 
-    Navigator.pop(loadingCtx);
+    SubmitLoadingDialog.close(context);
+
     setState(() => _isSubmitting = false);
 
-    showStatusDialog(
-      context: context,
-      success: ok,
-      onDone: () {
-        Navigator.pop(context);
-        if (ok) Navigator.pop(context);
-      },
-    );
+    _submitProgressText.value = "Mengirim data P2H...";
+
+    if (ok) {
+      StatusDialog.show(
+        context: context,
+        type: StatusDialogType.success,
+        title: "Berhasil",
+        message: "Data P2H LV berhasil dikirim.",
+        onDone: () {
+          Navigator.pop(context);
+          Navigator.pop(context);
+        },
+      );
+    } else if (savedToPending) {
+      StatusDialog.show(
+        context: context,
+        type: StatusDialogType.warning,
+        title: "Tersimpan di Pending",
+        message:
+            "Pengiriman gagal setelah beberapa kali percobaan. Data disimpan di Pending Submission.",
+        onDone: () => Navigator.pop(context),
+      );
+    } else {
+      StatusDialog.show(
+        context: context,
+        type: StatusDialogType.error,
+        title: "Gagal",
+        message: "Data P2H LV gagal dikirim.",
+        onDone: () => Navigator.pop(context),
+      );
+    }
   }
 
   void pilihTanggal() async {
@@ -1355,53 +1490,4 @@ class _FormP2HLVPageState extends State<FormP2HLV> {
       });
     }
   }
-}
-
-void showStatusDialog({
-  required BuildContext context,
-  required bool success,
-  required VoidCallback onDone,
-}) {
-  showDialog(
-    context: context,
-    barrierDismissible: false,
-    builder: (_) => AlertDialog(
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-      contentPadding: const EdgeInsets.symmetric(vertical: 28),
-      content: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(
-            success ? Icons.check_circle_rounded : Icons.cancel_rounded,
-            size: 80,
-            color: success ? Colors.green : Colors.red,
-          ),
-          const SizedBox(height: 16),
-          Text(
-            success ? "Berhasil Terkirim" : "Gagal Terkirim",
-            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            success ? "Data P2H berhasil dikirim" : "Data P2H Belum Lengkap",
-            style: const TextStyle(color: Colors.black54),
-          ),
-          const SizedBox(height: 22),
-          SizedBox(
-            width: 120,
-            child: ElevatedButton(
-              style: ElevatedButton.styleFrom(
-                backgroundColor: success ? Colors.green : Colors.redAccent,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(14),
-                ),
-              ),
-              onPressed: onDone,
-              child: Text("OK", style: TextStyle(color: Colors.white)),
-            ),
-          ),
-        ],
-      ),
-    ),
-  );
 }

@@ -1,128 +1,70 @@
-import 'dart:io';
 import 'dart:ui';
-
 import 'package:data_table_2/data_table_2.dart';
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
-import 'package:intl/intl.dart';
-import 'package:media_scanner/media_scanner.dart';
-import 'package:open_file/open_file.dart';
-import 'package:path_provider/path_provider.dart';
-import 'package:permission_handler/permission_handler.dart';
-
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:safety_apps/models/p2h/p2h_water_pump.dart';
+import 'package:safety_apps/models/result/excel_access.dart';
+import 'package:safety_apps/pages/excel_access.dart';
+import 'package:safety_apps/service/export_excel/export_type.dart';
 import 'package:safety_apps/service/p2h/p2h_water_pump_service.dart';
-
-// ====== STATUS HELPER (konsisten) ======
-String _norm(String? v) => (v ?? '').trim().toLowerCase();
-
-enum _StatusKind { yes, no, ok, bad, warn, none }
-
-_StatusKind _kind(String? v) {
-  final t = _norm(v);
-
-  if (t == "iya" || t == "ya" || t == "yes") return _StatusKind.yes;
-  if (t == "tidak" || t == "no") return _StatusKind.no;
-
-  if (t == "layak" || t == "baik" || t == "ok") return _StatusKind.ok;
-
-  if (t == "ada & layak" || t == "ada dan layak") return _StatusKind.ok;
-  if (t == "tidak berfungsi" || t == "rusak") return _StatusKind.warn;
-  if (t == "tidak ada") return _StatusKind.bad;
-
-  if (t == "n/a" || t == "na") return _StatusKind.warn;
-
-  return _StatusKind.none;
-}
-
-Color _kBg(_StatusKind k) {
-  switch (k) {
-    case _StatusKind.yes:
-    case _StatusKind.ok:
-      return Colors.green.withOpacity(0.12);
-    case _StatusKind.no:
-    case _StatusKind.bad:
-      return Colors.red.withOpacity(0.12);
-    case _StatusKind.warn:
-      return Colors.amber.withOpacity(0.18);
-    case _StatusKind.none:
-      return const Color(0xfff5f7fb);
-  }
-}
-
-Color _kBorder(_StatusKind k) {
-  switch (k) {
-    case _StatusKind.yes:
-    case _StatusKind.ok:
-      return Colors.green.withOpacity(0.35);
-    case _StatusKind.no:
-    case _StatusKind.bad:
-      return Colors.red.withOpacity(0.35);
-    case _StatusKind.warn:
-      return Colors.amber.withOpacity(0.45);
-    case _StatusKind.none:
-      return const Color(0xffe8ecf3);
-  }
-}
-
-Color _kText(_StatusKind k) {
-  switch (k) {
-    case _StatusKind.yes:
-    case _StatusKind.ok:
-      return Colors.green.shade800;
-    case _StatusKind.no:
-    case _StatusKind.bad:
-      return Colors.red.shade800;
-    case _StatusKind.warn:
-      return Colors.amber.shade900;
-    case _StatusKind.none:
-      return Colors.black;
-  }
-}
-
-IconData _kIcon(_StatusKind k) {
-  switch (k) {
-    case _StatusKind.yes:
-    case _StatusKind.ok:
-      return Icons.check_circle_rounded;
-    case _StatusKind.no:
-    case _StatusKind.bad:
-      return Icons.cancel_rounded;
-    case _StatusKind.warn:
-      return Icons.warning_amber_rounded;
-    case _StatusKind.none:
-      return Icons.info_outline;
-  }
-}
+import 'package:safety_apps/session/auth_session.dart';
+import 'package:safety_apps/widgets/result/app_bar.dart';
+import 'package:safety_apps/widgets/result/confirm_delete_excel_access.dart';
+import 'package:safety_apps/widgets/result/date_filter_bar.dart';
+import 'package:safety_apps/widgets/result/date_filter_modal.dart';
+import 'package:safety_apps/widgets/result/date_preset.dart';
+import 'package:safety_apps/widgets/result/detail_dialog.dart';
+import 'package:safety_apps/widgets/result/detail_helpers.dart';
+import 'package:safety_apps/widgets/result/empty_row.dart';
+import 'package:safety_apps/widgets/result/excel_access_bottom_sheet.dart';
+import 'package:safety_apps/widgets/result/excel_access_panel.dart';
+import 'package:safety_apps/widgets/result/excel_access_row.dart';
+import 'package:safety_apps/widgets/result/export/export_excel_helper.dart';
+import 'package:safety_apps/widgets/result/inspeksi/inspeksi_flat_box.dart';
+import 'package:safety_apps/widgets/result/load_excel_access.dart';
+import 'package:safety_apps/widgets/result/mark_excel_access_seen.dart';
+import 'package:safety_apps/widgets/result/no_excel_access_dialog.dart';
+import 'package:safety_apps/widgets/result/p2h/detail_helpers.dart';
+import 'package:safety_apps/widgets/result/p2h/p2h_helpers.dart';
+import 'package:safety_apps/widgets/result/page_style.dart';
+import 'package:safety_apps/widgets/result/pagination.dart';
+import 'package:safety_apps/widgets/result/pick_custom_range.dart';
+import 'package:safety_apps/widgets/result/result_table.dart';
+import 'package:safety_apps/widgets/result/search_box.dart';
+import 'package:safety_apps/widgets/result/table_helpers.dart';
+import 'package:safety_apps/widgets/result/toggle_excel_access.dart';
 
 class P2HWaterPumpResultPage extends StatefulWidget {
+  final int? openDetailId;
+  const P2HWaterPumpResultPage({super.key, this.openDetailId});
   @override
   State<P2HWaterPumpResultPage> createState() => _P2HWaterPumpResultPageState();
 }
 
-class _P2HWaterPumpResultPageState extends State<P2HWaterPumpResultPage> {
+class _P2HWaterPumpResultPageState extends State<P2HWaterPumpResultPage>
+    with SingleTickerProviderStateMixin {
   List<P2HWaterPumpModel> allData = [];
   List<P2HWaterPumpModel> filtered = [];
+  List<ExcelAccess> _accessList = [];
+
+  late AnimationController _pulseController;
+  late Animation<double> _pulseAnimation;
+
   int rowsPerPage = 10;
   int currentPage = 0;
-  bool loading = true;
-
-  static const Color _primary = Color(0xff1d63ff);
-  static const Color _secondary = Color(0xff4fa9ff);
-  static const Color _bg = Color(0xffeef2f7);
-  static const Color _surface = Colors.white;
-
-  final LinearGradient primaryGradient = const LinearGradient(
-    colors: [_primary, _secondary],
-    begin: Alignment.topLeft,
-    end: Alignment.bottomRight,
-  );
-
-  // kolom waterpump: 12
-  static const int _columnCount = 12;
+  int _unseenAddedBySuperadmin = 0;
 
   final TextEditingController _searchCtrl = TextEditingController();
   bool get _hasQuery => _searchCtrl.text.trim().isNotEmpty;
+
+  bool loading = true;
+  bool _openedFromNotif = false;
+  bool _exporting = false;
+  bool _loadingAccess = false;
+
+  String get _role => AuthSession.role ?? "member";
+  int get _currentSiteId => AuthSession.siteId ?? 0;
+  bool get _isAdminOrSuperadmin => _role == 'admin' || _role == 'superadmin';
 
   bool isImageFile(String path) {
     final p = path.toLowerCase();
@@ -133,15 +75,65 @@ class _P2HWaterPumpResultPageState extends State<P2HWaterPumpResultPage> {
         p.endsWith('.heic');
   }
 
+  DatePreset _datePreset = DatePreset.all;
+  DateTimeRange? _customRange;
+
+  DateTimeRange? _presetRange(DatePreset p) {
+    final now = DateTime.now();
+    DateTime startOfDay(DateTime d) => DateTime(d.year, d.month, d.day);
+
+    if (p == DatePreset.all) return null;
+
+    if (p == DatePreset.today) {
+      final start = startOfDay(now);
+      final end = start.add(const Duration(days: 1));
+      return DateTimeRange(start: start, end: end);
+    }
+
+    if (p == DatePreset.week) {
+      final today = startOfDay(now);
+      final start = today.subtract(Duration(days: today.weekday - 1));
+      final end = start.add(const Duration(days: 7));
+      return DateTimeRange(start: start, end: end);
+    }
+
+    if (p == DatePreset.month) {
+      final start = DateTime(now.year, now.month, 1);
+      final end = (now.month == 12)
+          ? DateTime(now.year + 1, 1, 1)
+          : DateTime(now.year, now.month + 1, 1);
+      return DateTimeRange(start: start, end: end);
+    }
+
+    return _customRange;
+  }
+
   @override
   void initState() {
     super.initState();
     _searchCtrl.addListener(() => setState(() {}));
     loadData();
+    _loadExcelAccess().then(
+      (_) => markExcelAccessSeen(
+        role: _role,
+        feature: "p2h_water_pump",
+        onReloadAccess: _loadExcelAccess,
+      ),
+    );
+
+    _pulseController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 900),
+    )..repeat(reverse: true);
+
+    _pulseAnimation = Tween<double>(begin: 0.95, end: 1.15).animate(
+      CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut),
+    );
   }
 
   @override
   void dispose() {
+    _pulseController.dispose();
     _searchCtrl.dispose();
     super.dispose();
   }
@@ -149,25 +141,68 @@ class _P2HWaterPumpResultPageState extends State<P2HWaterPumpResultPage> {
   Future<void> loadData() async {
     try {
       final data = await P2HWaterPumpService.fetchP2HWaterPump();
+      if (!mounted) return;
+
       setState(() {
         allData = data;
-        filtered = _searchResults(_searchCtrl.text);
+        filtered = _applySearchAndDate();
         loading = false;
         currentPage = 0;
         _ensurePageValid();
       });
+
+      if (widget.openDetailId != null && !_openedFromNotif) {
+        P2HWaterPumpModel? target;
+        try {
+          target = allData.firstWhere((e) => e.id == widget.openDetailId);
+        } catch (_) {
+          target = null;
+        }
+
+        if (target != null) {
+          _openedFromNotif = true;
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            showDetail(target!);
+          });
+        }
+      }
     } catch (e) {
-      setState(() => loading = false);
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text("Gagal memuat data P2H WaterPump: $e")),
-      );
+      setState(() => loading = false);
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text("Gagal memuat data: $e")));
     }
   }
 
-  // ===== SEARCH (contains + ranking) =====
+  List<P2HWaterPumpModel> _applySearchAndDate() {
+    final searched = _searchResults(_searchCtrl.text);
+    final range = _presetRange(_datePreset);
+    if (range == null) return searched;
+
+    return searched.where((e) {
+      if (e.tanggal.isEmpty) return false;
+
+      try {
+        final dt = DateTime.parse(e.tanggal);
+        return !dt.isBefore(range.start) && dt.isBefore(range.end);
+      } catch (_) {
+        return false;
+      }
+    }).toList();
+  }
+
+  List<ExcelAccess> get _sortedAccessNewest {
+    final list = List<ExcelAccess>.from(
+      _accessList.where((a) => a.feature == "p2h_water_pump"),
+    );
+    list.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    return list;
+  }
+
   List<P2HWaterPumpModel> _searchResults(String v) {
     final q = v.toLowerCase().trim();
+
     String safeLower(String? s) => (s ?? "").toLowerCase().trim();
 
     if (q.isEmpty) return List<P2HWaterPumpModel>.from(allData);
@@ -176,58 +211,49 @@ class _P2HWaterPumpResultPageState extends State<P2HWaterPumpResultPage> {
       final nama = safeLower(e.nama);
       final perusahaan = safeLower(e.perusahaan);
       final dept = safeLower(e.department);
-      final jabatan = safeLower(e.jabatan);
-      final unit = safeLower(e.noLambungUnit);
-      final hm = safeLower(e.hmUnit);
-      final shift = safeLower(e.shiftKerja);
 
-      return nama.contains(q) ||
-          perusahaan.contains(q) ||
-          dept.contains(q) ||
-          jabatan.contains(q) ||
-          unit.contains(q) ||
-          hm.contains(q) ||
-          shift.contains(q);
+      return nama.contains(q) || perusahaan.contains(q) || dept.contains(q);
     }).toList();
 
     int rankText(String text) {
       if (text.startsWith(q)) return 0;
+
       final wholeWord = RegExp(
         r'(^|[\s\W])' + RegExp.escape(q) + r'([\s\W]|$)',
       );
       if (wholeWord.hasMatch(text)) return 1;
+
       if (text.contains(q)) return 2;
       return 3;
     }
 
     int rankRow(P2HWaterPumpModel e) {
-      final fields = [
-        safeLower(e.nama),
-        safeLower(e.perusahaan),
-        safeLower(e.department),
-        safeLower(e.jabatan),
-        safeLower(e.noLambungUnit),
-        safeLower(e.hmUnit),
-        safeLower(e.shiftKerja),
-      ];
-      return fields.map(rankText).reduce((a, b) => a < b ? a : b);
+      final n = safeLower(e.nama);
+      final p = safeLower(e.perusahaan);
+      final d = safeLower(e.department);
+      return [
+        rankText(n),
+        rankText(p),
+        rankText(d),
+      ].reduce((a, b) => a < b ? a : b);
     }
 
     int firstIndexRow(P2HWaterPumpModel e) {
-      final fields = [
-        safeLower(e.nama),
-        safeLower(e.perusahaan),
-        safeLower(e.department),
-        safeLower(e.jabatan),
-        safeLower(e.noLambungUnit),
-        safeLower(e.hmUnit),
-        safeLower(e.shiftKerja),
-      ];
+      final n = safeLower(e.nama);
+      final p = safeLower(e.perusahaan);
+      final d = safeLower(e.department);
+
+      int idx(String s) => s.indexOf(q);
+
+      final inN = idx(n);
+      final inP = idx(p);
+      final inD = idx(d);
+
       int best = 1 << 30;
-      for (final f in fields) {
-        final i = f.indexOf(q);
-        if (i >= 0 && i < best) best = i;
-      }
+      if (inN >= 0) best = inN < best ? inN : best;
+      if (inP >= 0) best = inP < best ? inP : best;
+      if (inD >= 0) best = inD < best ? inD : best;
+
       return best == (1 << 30) ? (1 << 29) : best;
     }
 
@@ -246,16 +272,27 @@ class _P2HWaterPumpResultPageState extends State<P2HWaterPumpResultPage> {
     return results;
   }
 
+  List<P2HWaterPumpModel> get pageData {
+    final start = currentPage * rowsPerPage;
+    final end = (start + rowsPerPage).clamp(0, filtered.length);
+    return filtered.sublist(start, end);
+  }
+
   void onSearch(String v) {
     setState(() {
-      filtered = _searchResults(v);
+      filtered = _applySearchAndDate();
       currentPage = 0;
       _ensurePageValid();
     });
   }
 
-  int get _totalPage =>
-      (filtered.length / rowsPerPage).ceil().clamp(1, 1 << 30);
+  void _refreshFiltered() {
+    setState(() {
+      filtered = _applySearchAndDate();
+      currentPage = 0;
+      _ensurePageValid();
+    });
+  }
 
   void _ensurePageValid() {
     final tp = _totalPage;
@@ -263,304 +300,401 @@ class _P2HWaterPumpResultPageState extends State<P2HWaterPumpResultPage> {
     if (currentPage < 0) currentPage = 0;
   }
 
-  List<P2HWaterPumpModel> get pageData {
-    final start = currentPage * rowsPerPage;
-    final end = (start + rowsPerPage).clamp(0, filtered.length);
-    return filtered.sublist(start, end);
+  int get _totalPage =>
+      (filtered.length / rowsPerPage).ceil().clamp(1, 1 << 30);
+
+  Future<void> _loadExcelAccess() async {
+    setState(() => _loadingAccess = true);
+    try {
+      final result = await loadExcelAccess(
+        role: _role,
+        currentSiteId: _currentSiteId,
+        feature: "p2h_water_pump",
+      );
+
+      setState(() {
+        _accessList = result.accessList;
+        _unseenAddedBySuperadmin = result.unseenAddedBySuperadmin;
+      });
+    } finally {
+      if (mounted) setState(() => _loadingAccess = false);
+    }
+  }
+
+  Future<void> _toggleAccess(ExcelAccess a, bool v) async {
+    await toggleExcelAccess(
+      context: context,
+      feature: "p2h_water_pump",
+      role: _role,
+      currentSiteId: _currentSiteId,
+      access: a,
+      value: v,
+      onOptimisticChange: () {
+        setState(() => a.canDownload = v);
+      },
+      onRollback: () {
+        setState(() => a.canDownload = !v);
+      },
+      onRoleChanged: logoutAndRedirect,
+    );
+  }
+
+  Future<void> logoutAndRedirect() async {
+    const storage = FlutterSecureStorage();
+    await storage.delete(key: "jwt_token");
+
+    if (!mounted) return;
+    Navigator.of(context).pushNamedAndRemoveUntil("/login", (route) => false);
+  }
+
+  bool get _canCurrentUserDownloadExcel {
+    if (AuthSession.role == "superadmin") return true;
+    if (AuthSession.role == "admin") return true;
+
+    return _accessList.any(
+      (a) =>
+          a.userId == AuthSession.userId &&
+          a.siteId == AuthSession.siteId &&
+          a.feature == "p2h_water_pump" &&
+          a.canDownload == true,
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: _bg,
-      appBar: _appBarPremium(),
+      backgroundColor: ResultPageStyle.bg,
+      appBar: ResultAppBar(
+        title: "P2H Water Pump Results",
+        total: filtered.length,
+        onBack: () => Navigator.maybePop(context),
+      ),
       body: loading
           ? const Center(child: CircularProgressIndicator())
-          : Padding(
-              padding: const EdgeInsets.all(18),
-              child: Column(
-                children: [
-                  _searchBoxPremium(),
-                  const SizedBox(height: 16),
-                  Expanded(child: _tablePremium()),
-                  _paginationPremium(),
-                ],
-              ),
-            ),
-    );
-  }
+          : LayoutBuilder(
+              builder: (context, c) {
+                const tableHeadingHeight = 60.0;
+                const tableRowHeight = 66.0;
 
-  // ===== APPBAR PREMIUM =====
-  PreferredSizeWidget _appBarPremium() {
-    return PreferredSize(
-      preferredSize: const Size.fromHeight(84),
-      child: Container(
-        decoration: BoxDecoration(
-          gradient: primaryGradient,
-          borderRadius: const BorderRadius.vertical(
-            bottom: Radius.circular(28),
-          ),
-          boxShadow: [
-            BoxShadow(
-              color: _primary.withOpacity(0.24),
-              blurRadius: 26,
-              offset: const Offset(0, 14),
-            ),
-          ],
-        ),
-        child: SafeArea(
-          bottom: false,
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(12, 6, 12, 10),
-            child: Row(
-              children: [
-                InkWell(
-                  borderRadius: BorderRadius.circular(999),
-                  onTap: () => Navigator.maybePop(context),
-                  child: Container(
-                    padding: const EdgeInsets.all(10),
-                    decoration: BoxDecoration(
-                      color: Colors.white.withOpacity(0.16),
-                      borderRadius: BorderRadius.circular(999),
-                      border: Border.all(color: Colors.white.withOpacity(0.16)),
-                    ),
-                    child: const Icon(Icons.arrow_back, color: Colors.white),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                const Expanded(
-                  child: Text(
-                    "P2H WaterPump Results",
-                    style: TextStyle(
-                      fontWeight: FontWeight.w900,
-                      fontSize: 20,
-                      color: Colors.white,
-                      letterSpacing: 0.2,
-                    ),
-                  ),
-                ),
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 12,
-                    vertical: 8,
-                  ),
-                  decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.16),
-                    borderRadius: BorderRadius.circular(999),
-                    border: Border.all(color: Colors.white.withOpacity(0.16)),
-                  ),
-                  child: Row(
+                final tableHeight =
+                    tableHeadingHeight + (rowsPerPage * tableRowHeight);
+
+                return Padding(
+                  padding: const EdgeInsets.fromLTRB(18, 18, 18, 18),
+                  child: Column(
                     children: [
-                      const Icon(
-                        Icons.layers_rounded,
-                        color: Colors.white,
-                        size: 16,
-                      ),
-                      const SizedBox(width: 6),
-                      Text(
-                        "${filtered.length}",
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.w900,
+                      Expanded(
+                        child: ListView(
+                          padding: EdgeInsets.zero,
+                          children: [
+                            ResultSearchBox(
+                              controller: _searchCtrl,
+                              onChanged: onSearch,
+                              hasQuery: _hasQuery,
+                              onClear: () {
+                                _searchCtrl.clear();
+                                onSearch("");
+                                setState(() {});
+                              },
+                            ),
+                            const SizedBox(height: 12),
+
+                            ResultDateFilterBar(
+                              datePreset: _datePreset,
+                              range: _presetRange(_datePreset),
+                              exporting: _exporting,
+                              filteredLength: filtered.length,
+                              canCurrentUserDownloadExcel:
+                                  _canCurrentUserDownloadExcel,
+                              onOpenDateFilterModal: () => openDateFilterModal(
+                                context: context,
+                                selectedPreset: _datePreset,
+                                onSelectAll: () {
+                                  setState(() => _datePreset = DatePreset.all);
+                                  _refreshFiltered();
+                                  Navigator.pop(context);
+                                },
+                                onSelectToday: () {
+                                  setState(
+                                    () => _datePreset = DatePreset.today,
+                                  );
+                                  _refreshFiltered();
+                                  Navigator.pop(context);
+                                },
+                                onSelectWeek: () {
+                                  setState(() => _datePreset = DatePreset.week);
+                                  _refreshFiltered();
+                                  Navigator.pop(context);
+                                },
+                                onSelectMonth: () {
+                                  setState(
+                                    () => _datePreset = DatePreset.month,
+                                  );
+                                  _refreshFiltered();
+                                  Navigator.pop(context);
+                                },
+                                onSelectCustom: () async {
+                                  Navigator.pop(context);
+                                  final picked = await pickCustomRange(
+                                    context: context,
+                                    initialDateRange: _customRange,
+                                  );
+                                  if (picked == null) return;
+
+                                  setState(() {
+                                    _customRange = picked;
+                                    _datePreset = DatePreset.custom;
+                                  });
+                                  _refreshFiltered();
+                                },
+                              ),
+                              onExportExcel: () async {
+                                if (_exporting) return;
+
+                                await exportExcelCurrentFilter(
+                                  context: context,
+                                  canCurrentUserDownloadExcel:
+                                      _canCurrentUserDownloadExcel,
+                                  type: ExportType.p2h_water_pump,
+                                  range: _presetRange(_datePreset),
+                                  onNoAccess: () =>
+                                      showNoExcelAccessDialog(context),
+                                  onStartExporting: () {
+                                    if (!mounted) return;
+                                    setState(() => _exporting = true);
+                                  },
+                                  onFinishExporting: () {
+                                    if (!mounted) return;
+                                    setState(() => _exporting = false);
+                                  },
+                                );
+                              },
+                              onNoExcelAccess: () =>
+                                  showNoExcelAccessDialog(context),
+                              onTapPreset: (p) async {
+                                if (_datePreset == p) return;
+
+                                if (p == DatePreset.custom) {
+                                  final picked = await pickCustomRange(
+                                    context: context,
+                                    initialDateRange: _customRange,
+                                  );
+                                  if (picked == null) return;
+
+                                  setState(() {
+                                    _customRange = picked;
+                                    _datePreset = DatePreset.custom;
+                                  });
+                                  _refreshFiltered();
+                                  return;
+                                }
+
+                                setState(() {
+                                  _datePreset = p;
+                                });
+                                _refreshFiltered();
+                              },
+                            ),
+
+                            const SizedBox(height: 12),
+
+                            if (_isAdminOrSuperadmin) ...[
+                              ResultExcelAccessPanel(
+                                role: _role,
+                                unseenAddedBySuperadmin:
+                                    _unseenAddedBySuperadmin,
+                                loadingAccess: _loadingAccess,
+                                isEmpty: _accessList
+                                    .where((a) => a.feature == "p2h_water_pump")
+                                    .isEmpty,
+                                totalCount: _sortedAccessNewest.length,
+                                previewChildren: _sortedAccessNewest
+                                    .take(3)
+                                    .map(
+                                      (a) => ResultExcelAccessRow(
+                                        access: a,
+                                        onChanged: (v) => _toggleAccess(a, v),
+                                        onDelete: () =>
+                                            confirmDeleteExcelAccess(
+                                              context: context,
+                                              feature: "p2h_water_pump",
+                                              access: a,
+                                              onDeleted: () {
+                                                setState(() {
+                                                  _accessList.removeWhere(
+                                                    (x) =>
+                                                        x.userId == a.userId &&
+                                                        x.siteId == a.siteId,
+                                                  );
+                                                });
+                                              },
+                                            ),
+                                      ),
+                                    )
+                                    .toList(),
+                                onTapTambah: () async {
+                                  await Navigator.push(
+                                    context,
+                                    MaterialPageRoute(
+                                      builder: (_) => GrantExcelAccessPage(
+                                        currentUserId: AuthSession.userId!,
+                                        currentRole:
+                                            AuthSession.role ?? "member",
+                                        currentSiteId: AuthSession.siteId,
+                                        feature: "p2h_water_pump",
+                                        onGranted: () async {
+                                          await _loadExcelAccess();
+                                        },
+                                      ),
+                                    ),
+                                  );
+                                },
+                                onTapShowMore: () => showExcelAccessBottomSheet(
+                                  context: context,
+                                  feature: "p2h_water_pump",
+                                  allAccess: _sortedAccessNewest,
+                                  onToggleAccess: (access, value) =>
+                                      _toggleAccess(access, value),
+                                  onDeletedAccess: (access) async {
+                                    setState(() {
+                                      _accessList.removeWhere(
+                                        (x) =>
+                                            x.userId == access.userId &&
+                                            x.siteId == access.siteId,
+                                      );
+                                    });
+                                  },
+                                  refreshParent: () => setState(() {}),
+                                ),
+                                unseenBadge: Wrap(
+                                  crossAxisAlignment: WrapCrossAlignment.center,
+                                  spacing: 8,
+                                  runSpacing: 8,
+                                  children: [
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 10,
+                                        vertical: 6,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: const Color(0xFFFFF7ED),
+                                        borderRadius: BorderRadius.circular(
+                                          999,
+                                        ),
+                                        border: Border.all(
+                                          color: const Color(0xFFFDBA74),
+                                        ),
+                                      ),
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          AnimatedBuilder(
+                                            animation: _pulseAnimation,
+                                            builder: (_, child) {
+                                              return Transform.scale(
+                                                scale: _pulseAnimation.value,
+                                                child: child,
+                                              );
+                                            },
+                                            child: Container(
+                                              width: 8,
+                                              height: 8,
+                                              decoration: const BoxDecoration(
+                                                color: Color(0xFFF97316),
+                                                shape: BoxShape.circle,
+                                              ),
+                                            ),
+                                          ),
+                                          const SizedBox(width: 6),
+                                          Text(
+                                            _unseenAddedBySuperadmin == 1
+                                                ? "New Access"
+                                                : "$_unseenAddedBySuperadmin New",
+                                            style: const TextStyle(
+                                              fontWeight: FontWeight.w800,
+                                              fontSize: 11.5,
+                                              color: Color(0xFF9A3412),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              const SizedBox(height: 14),
+                            ],
+
+                            SizedBox(height: tableHeight, child: _table()),
+                            const SizedBox(height: 12),
+
+                            ResultPagination(
+                              filteredLength: filtered.length,
+                              currentPage: currentPage,
+                              rowsPerPage: rowsPerPage,
+                              pageDataLength: pageData.length,
+                              onRowsPerPageChanged: (v) {
+                                setState(() {
+                                  rowsPerPage = v;
+                                  currentPage = 0;
+                                  _ensurePageValid();
+                                });
+                                FocusScope.of(context).unfocus();
+                              },
+                              onPrevPage: () => setState(() {
+                                currentPage--;
+                                _ensurePageValid();
+                              }),
+                              onNextPage: () => setState(() {
+                                currentPage++;
+                                _ensurePageValid();
+                              }),
+                            ),
+                          ],
                         ),
                       ),
                     ],
                   ),
-                ),
-              ],
+                );
+              },
             ),
-          ),
-        ),
-      ),
     );
   }
 
-  // ===== SEARCH PREMIUM =====
-  Widget _searchBoxPremium() {
-    return Container(
-      decoration: BoxDecoration(
-        color: _surface,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: Colors.black.withOpacity(0.05)),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.06),
-            blurRadius: 16,
-            offset: const Offset(0, 8),
-          ),
-        ],
-      ),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(18),
-        child: TextField(
-          controller: _searchCtrl,
-          onChanged: onSearch,
-          textInputAction: TextInputAction.search,
-          decoration: InputDecoration(
-            hintText:
-                "Cari nama / perusahaan / department / jabatan / unit / shift …",
-            hintStyle: const TextStyle(
-              color: Colors.black45,
-              fontWeight: FontWeight.w600,
-            ),
-            prefixIcon: Padding(
-              padding: const EdgeInsets.only(left: 12, right: 6),
-              child: Container(
-                width: 38,
-                height: 38,
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(14),
-                  gradient: primaryGradient,
-                  boxShadow: [
-                    BoxShadow(
-                      color: _primary.withOpacity(0.20),
-                      blurRadius: 14,
-                      offset: const Offset(0, 8),
-                    ),
-                  ],
-                ),
-                child: const Icon(Icons.search_rounded, color: Colors.white),
-              ),
-            ),
-            prefixIconConstraints: const BoxConstraints(minWidth: 64),
-            suffixIcon: !_hasQuery
-                ? null
-                : IconButton(
-                    onPressed: () {
-                      _searchCtrl.clear();
-                      onSearch("");
-                      setState(() {});
-                    },
-                    icon: Icon(
-                      Icons.close_rounded,
-                      color: Colors.black.withOpacity(0.55),
-                    ),
-                  ),
-            filled: true,
-            fillColor: _surface,
-            border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(18),
-              borderSide: BorderSide.none,
-            ),
-            enabledBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(18),
-              borderSide: BorderSide.none,
-            ),
-            focusedBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(18),
-              borderSide: BorderSide.none,
-            ),
-            contentPadding: const EdgeInsets.symmetric(
-              horizontal: 12,
-              vertical: 16,
-            ),
-          ),
-        ),
-      ),
-    );
-  }
+  Widget _table() {
+    const tableHeadingHeight = 60.0;
+    const tableRowHeight = 66.0;
 
-  // ===== TABLE PREMIUM =====
-  Widget _tablePremium() {
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(24),
-      child: Container(
-        decoration: BoxDecoration(
-          color: _surface,
-          borderRadius: BorderRadius.circular(24),
-          border: Border.all(color: Colors.black.withOpacity(0.05)),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withOpacity(0.06),
-              blurRadius: 18,
-              offset: const Offset(0, 10),
-            ),
-          ],
-        ),
-        child: Stack(
-          children: [
-            Container(
-              height: 60,
-              decoration: BoxDecoration(gradient: primaryGradient),
-            ),
-            DataTable2(
-              columnSpacing: 26,
-              horizontalMargin: 16,
-              minWidth: 5000,
-              fixedTopRows: 1,
-              headingRowHeight: 60,
-              dataRowHeight: 66,
-              headingRowColor: MaterialStateProperty.all(
-                const Color.fromRGBO(0, 0, 0, 0),
-              ),
-              headingTextStyle: const TextStyle(
-                color: Colors.white,
-                fontWeight: FontWeight.w900,
-                fontSize: 15.5,
-                letterSpacing: 0.2,
-              ),
-              dividerThickness: 0.6,
-              columns: const [
-                DataColumn2(label: Center(child: Text("No")), fixedWidth: 90),
-                DataColumn2(
-                  label: Center(child: Text("Nama")),
-                  fixedWidth: 300,
-                ),
-                DataColumn2(
-                  label: Center(child: Text("Jabatan")),
-                  fixedWidth: 200,
-                ),
-                DataColumn2(
-                  label: Center(child: Text("Department")),
-                  fixedWidth: 200,
-                ),
-                DataColumn2(
-                  label: Center(child: Text("Perusahaan")),
-                  fixedWidth: 200,
-                ),
-                DataColumn2(
-                  label: Center(child: Text("Tanggal")),
-                  fixedWidth: 150,
-                ),
-                DataColumn2(
-                  label: Center(child: Text("No Lambung Unit")),
-                  fixedWidth: 200,
-                ),
-                DataColumn2(
-                  label: Center(child: Text("HM Unit")),
-                  fixedWidth: 200,
-                ),
-                DataColumn2(
-                  label: Center(child: Text("Shift Kerja")),
-                  fixedWidth: 150,
-                ),
-                DataColumn2(
-                  label: Center(child: Text("Siap Kerja")),
-                  fixedWidth: 130,
-                ),
-                DataColumn2(
-                  label: Center(child: Text("Dokumen")),
-                  fixedWidth: 130,
-                ),
-                DataColumn2(
-                  label: Center(child: Text("Detail")),
-                  fixedWidth: 130,
-                ),
-              ],
-              rows: [
-                ...List.generate(
-                  pageData.length,
-                  (i) => _rowPremium(pageData[i], i),
-                ),
-                ...List.generate(
-                  rowsPerPage - pageData.length,
-                  (_) => _emptyRow(),
-                ),
-              ],
-            ),
-          ],
-        ),
+    final columns = const [
+      DataColumn2(label: Center(child: Text("No")), fixedWidth: 90),
+      DataColumn2(label: Center(child: Text("Nama")), fixedWidth: 300),
+      DataColumn2(label: Center(child: Text("Jabatan")), fixedWidth: 200),
+      DataColumn2(label: Center(child: Text("Department")), fixedWidth: 200),
+      DataColumn2(label: Center(child: Text("Perusahaan")), fixedWidth: 200),
+      DataColumn2(label: Center(child: Text("Tanggal")), fixedWidth: 150),
+      DataColumn2(
+        label: Center(child: Text("No Lambung Unit")),
+        fixedWidth: 200,
       ),
+      DataColumn2(label: Center(child: Text("HM Unit")), fixedWidth: 200),
+      DataColumn2(label: Center(child: Text("Shift Kerja")), fixedWidth: 150),
+      DataColumn2(label: Center(child: Text("Siap Kerja")), fixedWidth: 130),
+      DataColumn2(label: Center(child: Text("Dokumen")), fixedWidth: 130),
+      DataColumn2(label: Center(child: Text("Detail")), fixedWidth: 130),
+    ];
+
+    return ResultTable(
+      headingRowHeight: tableHeadingHeight,
+      dataRowHeight: tableRowHeight,
+      minWidth: 5000,
+      columns: columns,
+      rows: [
+        ...List.generate(pageData.length, (i) => _rowPremium(pageData[i], i)),
+        ...List.generate(
+          rowsPerPage - pageData.length,
+          (_) => buildEmptyRow(columns.length),
+        ),
+      ],
     );
   }
 
@@ -569,89 +703,44 @@ class _P2HWaterPumpResultPageState extends State<P2HWaterPumpResultPage> {
     final bool zebra = index.isEven;
     final Color bg = zebra ? const Color(0xfff7f9fd) : Colors.white;
 
-    Widget docBtn() {
-      return InkWell(
-        borderRadius: BorderRadius.circular(14),
-        onTap: () {
-          if (e.files.isEmpty) return;
-          _showFilesDialog(e.files);
-        },
-        child: Container(
-          padding: const EdgeInsets.all(10),
-          decoration: BoxDecoration(
-            color: _primary.withOpacity(0.08),
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(color: _primary.withOpacity(0.14)),
-          ),
-          child: ShaderMask(
-            shaderCallback: (bounds) => primaryGradient.createShader(bounds),
-            child: const Icon(
-              Icons.attach_file_rounded,
-              color: Colors.white,
-              size: 20,
+    return DataRow(
+      color: WidgetStateProperty.all(bg),
+      cells: [
+        DataCell(buildResultCell(no.toString(), weight: FontWeight.w900)),
+        DataCell(buildResultCellWrap(e.nama)),
+        DataCell(buildResultCellWrap(e.jabatan)),
+        DataCell(buildResultCellWrap(e.department)),
+        DataCell(buildResultCellWrap(e.perusahaan)),
+        DataCell(Center(child: buildResultCell(formatTanggal(e.tanggal)))),
+        DataCell(buildResultCellWrap(e.noLambungUnit)),
+        DataCell(buildResultCellWrap(e.hmUnit)),
+        DataCell(buildResultCellWrap(e.shiftKerja)),
+        DataCell(
+          Center(
+            child: statusChip<StatusKind>(
+              v: e.unitAman,
+              kind: (value) => kindStatus(value),
+              norm: (value) => normStatus(value),
+              iconOf: (kindValue) => kIcon(kindValue),
+              noneKind: StatusKind.none,
+              yesKind: StatusKind.yes,
+              okKind: StatusKind.ok,
+              warnKind: StatusKind.warn,
             ),
           ),
         ),
-      );
-    }
-
-    Widget _chip(Color base, IconData icon, String v) {
-      return Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-        decoration: BoxDecoration(
-          color: base.withOpacity(0.12),
-          borderRadius: BorderRadius.circular(999),
-          border: Border.all(color: base.withOpacity(0.35)),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(icon, size: 16, color: base),
-            const SizedBox(width: 6),
-            Text(
-              v,
-              style: TextStyle(
-                fontWeight: FontWeight.w900,
-                fontSize: 12,
-                color: base,
+        DataCell(
+          Center(
+            child: docBtn(
+              files: e.files,
+              onShowFiles: () => showFilesDialogP2H(
+                context: context,
+                files: e.files,
+                isImageFile: isImageFile,
               ),
             ),
-          ],
+          ),
         ),
-      );
-    }
-
-    Widget statusChip(String v) {
-      if (_norm(v) == "open") {
-        return _chip(Colors.orange, Icons.timelapse_rounded, v);
-      }
-
-      final k = _kind(v);
-      if (k == _StatusKind.none) {
-        return _chip(Colors.blueGrey, Icons.info_outline, v);
-      }
-
-      final base = (k == _StatusKind.yes || k == _StatusKind.ok)
-          ? Colors.green
-          : (k == _StatusKind.warn ? Colors.amber : Colors.red);
-
-      return _chip(base, _kIcon(k), v);
-    }
-
-    return DataRow(
-      color: MaterialStateProperty.all(bg),
-      cells: [
-        DataCell(cell(no.toString(), weight: FontWeight.w900)),
-        DataCell(cellWrap(e.nama)),
-        DataCell(cellWrap(e.jabatan)),
-        DataCell(cellWrap(e.department)),
-        DataCell(cellWrap(e.perusahaan)),
-        DataCell(Center(child: cell(formatTanggal(e.tanggal)))),
-        DataCell(cellWrap(e.noLambungUnit)),
-        DataCell(cellWrap(e.hmUnit)),
-        DataCell(cellWrap(e.shiftKerja)),
-        DataCell(Center(child: statusChip(e.unitAman))),
-        DataCell(Center(child: docBtn())),
         DataCell(
           Center(
             child: InkWell(
@@ -663,11 +752,11 @@ class _P2HWaterPumpResultPageState extends State<P2HWaterPumpResultPage> {
                   vertical: 10,
                 ),
                 decoration: BoxDecoration(
-                  gradient: primaryGradient,
+                  gradient: ResultPageStyle.primaryGradient,
                   borderRadius: BorderRadius.circular(14),
                   boxShadow: [
                     BoxShadow(
-                      color: _primary.withOpacity(0.22),
+                      color: ResultPageStyle.primary.withOpacity(0.22),
                       blurRadius: 14,
                       offset: const Offset(0, 8),
                     ),
@@ -688,1164 +777,135 @@ class _P2HWaterPumpResultPageState extends State<P2HWaterPumpResultPage> {
     );
   }
 
-  DataRow _emptyRow() {
-    return DataRow(
-      cells: List.generate(_columnCount, (_) => const DataCell(SizedBox())),
-    );
-  }
-
-  // ===== PAGINATION PREMIUM =====
-  Widget _paginationPremium() {
-    final totalPage = _totalPage;
-    final start = filtered.isEmpty ? 0 : (currentPage * rowsPerPage + 1);
-    final end = (currentPage * rowsPerPage + pageData.length).clamp(
-      0,
-      filtered.length,
-    );
-
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final bool compact = constraints.maxWidth < 420;
-
-        final String topLeft = compact
-            ? "Menampilkan $start–$end"
-            : "Menampilkan data $start–$end";
-
-        final String topRight = compact
-            ? "Total: ${filtered.length}"
-            : "Total data: ${filtered.length} • Halaman: ${currentPage + 1}/$totalPage";
-
-        return Container(
-          width: double.infinity,
-          margin: const EdgeInsets.only(top: 14),
-          padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
-          decoration: BoxDecoration(
-            color: _surface,
-            borderRadius: BorderRadius.circular(18),
-            border: Border.all(color: Colors.black.withOpacity(0.05)),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(0.06),
-                blurRadius: 14,
-                offset: const Offset(0, 8),
-              ),
-            ],
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      topLeft,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        color: Colors.black.withOpacity(0.60),
-                        fontWeight: FontWeight.w800,
-                        fontSize: 12.5,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  Text(
-                    topRight,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      color: Colors.black.withOpacity(0.45),
-                      fontWeight: FontWeight.w700,
-                      fontSize: 12,
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 12),
-              Row(
-                children: [
-                  _rowsPerPageControl(
-                    compact: compact,
-                    value: rowsPerPage,
-                    onChanged: (v) {
-                      setState(() {
-                        rowsPerPage = v;
-                        currentPage = 0;
-                        _ensurePageValid();
-                      });
-                      FocusScope.of(context).unfocus();
-                    },
-                  ),
-                  const SizedBox(width: 12),
-                  const Spacer(),
-                  Wrap(
-                    spacing: 10,
-                    crossAxisAlignment: WrapCrossAlignment.center,
-                    children: [
-                      _pageIcon(
-                        enabled: currentPage > 0,
-                        icon: Icons.chevron_left_rounded,
-                        onTap: () => setState(() {
-                          currentPage--;
-                          _ensurePageValid();
-                        }),
-                      ),
-                      Container(
-                        constraints: BoxConstraints(
-                          maxWidth: compact ? 150 : 220,
-                        ),
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 14,
-                          vertical: 9,
-                        ),
-                        decoration: BoxDecoration(
-                          color: _primary.withOpacity(0.08),
-                          borderRadius: BorderRadius.circular(999),
-                          border: Border.all(color: _primary.withOpacity(0.14)),
-                        ),
-                        child: FittedBox(
-                          fit: BoxFit.scaleDown,
-                          alignment: Alignment.center,
-                          child: Text(
-                            compact
-                                ? "${currentPage + 1} / $totalPage"
-                                : "Page ${currentPage + 1} / $totalPage",
-                            style: TextStyle(
-                              fontWeight: FontWeight.w900,
-                              color: Colors.black.withOpacity(0.72),
-                            ),
-                          ),
-                        ),
-                      ),
-                      _pageIcon(
-                        enabled: currentPage + 1 < totalPage,
-                        icon: Icons.chevron_right_rounded,
-                        onTap: () => setState(() {
-                          currentPage++;
-                          _ensurePageValid();
-                        }),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-              const SizedBox(height: 10),
-              Text(
-                compact
-                    ? "Tip: gunakan pencarian untuk cepat menemukan data."
-                    : "Tip: atur jumlah baris (10/25/50) agar navigasi lebih nyaman.",
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  color: Colors.black.withOpacity(0.38),
-                  fontWeight: FontWeight.w600,
-                  fontSize: 11.5,
-                ),
-              ),
-            ],
-          ),
-        );
-      },
-    );
-  }
-
-  Widget _rowsPerPageControl({
-    required bool compact,
-    required int value,
-    required ValueChanged<int> onChanged,
-  }) {
-    final items = const [10, 25, 50];
-
-    BoxDecoration deco() => BoxDecoration(
-      color: _primary.withOpacity(0.06),
-      borderRadius: BorderRadius.circular(999),
-      border: Border.all(color: _primary.withOpacity(0.14)),
-    );
-
-    TextStyle tStyle() => TextStyle(
-      fontWeight: FontWeight.w900,
-      color: Colors.black.withOpacity(0.70),
-    );
-
-    if (compact) {
-      return Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-        decoration: deco(),
-        child: DropdownButtonHideUnderline(
-          child: DropdownButton<int>(
-            value: value,
-            isDense: true,
-            icon: Icon(
-              Icons.expand_more_rounded,
-              size: 18,
-              color: Colors.black.withOpacity(0.55),
-            ),
-            items: items
-                .map(
-                  (v) => DropdownMenuItem<int>(
-                    value: v,
-                    child: Text("$v", style: tStyle()),
-                  ),
-                )
-                .toList(),
-            onChanged: (v) {
-              if (v == null) return;
-              onChanged(v);
-            },
-          ),
-        ),
-      );
-    }
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-      decoration: deco(),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text(
-            "Rows",
-            style: TextStyle(
-              fontWeight: FontWeight.w800,
-              color: Colors.black.withOpacity(0.55),
-            ),
-          ),
-          const SizedBox(width: 8),
-          DropdownButtonHideUnderline(
-            child: DropdownButton<int>(
-              value: value,
-              isDense: true,
-              icon: Icon(
-                Icons.expand_more_rounded,
-                color: Colors.black.withOpacity(0.55),
-              ),
-              items: items
-                  .map(
-                    (v) => DropdownMenuItem<int>(
-                      value: v,
-                      child: Text("$v", style: tStyle()),
-                    ),
-                  )
-                  .toList(),
-              onChanged: (v) {
-                if (v == null) return;
-                onChanged(v);
-              },
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _pageIcon({
-    required bool enabled,
-    required IconData icon,
-    required VoidCallback onTap,
-  }) {
-    return InkWell(
-      borderRadius: BorderRadius.circular(14),
-      onTap: enabled ? onTap : null,
-      child: Opacity(
-        opacity: enabled ? 1 : 0.35,
-        child: Container(
-          padding: const EdgeInsets.all(10),
-          decoration: BoxDecoration(
-            color: enabled
-                ? _primary.withOpacity(0.08)
-                : Colors.black.withOpacity(0.04),
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(
-              color: enabled
-                  ? _primary.withOpacity(0.14)
-                  : Colors.black.withOpacity(0.05),
-            ),
-          ),
-          child: Icon(icon, color: Colors.black.withOpacity(0.65)),
-        ),
-      ),
-    );
-  }
-
-  // ===== helper responsive pair (detail) =====
-  Widget _pair(
-    BuildContext context,
-    Widget a,
-    Widget b, {
-    double breakpoint = 520,
-    double gap = 12,
-  }) {
-    return LayoutBuilder(
-      builder: (context, c) {
-        final oneColumn = c.maxWidth < breakpoint;
-        if (oneColumn) {
-          return Column(
-            children: [
-              a,
-              SizedBox(height: gap),
-              b,
-            ],
-          );
-        }
-        return Row(
-          children: [
-            Expanded(child: a),
-            SizedBox(width: gap),
-            Expanded(child: b),
-          ],
-        );
-      },
-    );
-  }
-
-  // ====== DETAIL (JANGAN UBAH LABEL & DATA) ======
   void showDetail(P2HWaterPumpModel e) {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (_) {
-        return Container(
-          height: MediaQuery.of(context).size.height * 0.9,
-          decoration: const BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
-          ),
-          child: Column(
+        return ResultDetailBottomSheet(
+          title: "Detail Laporan P2H Water Pump",
+          onClose: () => Navigator.pop(context),
+          content: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              buildResultSectionTitle("Informasi Pelapor"),
+              pairP2H(
+                context,
+                flatBoxP2H("Nama Lengkap", e.nama),
+                flatBoxP2H("Perusahaan", e.perusahaan),
+              ),
               const SizedBox(height: 12),
-              Container(
-                width: 50,
-                height: 5,
-                decoration: BoxDecoration(
-                  color: Colors.grey[300],
-                  borderRadius: BorderRadius.circular(10),
-                ),
+              pairP2H(
+                context,
+                flatBoxP2H("Department", e.department),
+                flatBoxP2H("Jabatan", e.jabatan),
               ),
-              Padding(
-                padding: const EdgeInsets.all(20),
-                child: Row(
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.all(10),
-                      decoration: const BoxDecoration(
-                        shape: BoxShape.circle,
-                        gradient: LinearGradient(
-                          colors: [_primary, _secondary],
-                        ),
-                      ),
-                      child: const Icon(
-                        Icons.assignment_rounded,
-                        color: Colors.white,
-                        size: 25,
-                      ),
-                    ),
-                    const SizedBox(width: 14),
-                    const Expanded(
-                      child: Text(
-                        "Detail Laporan P2H Water Pump",
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: 20,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const Divider(height: 1),
-              Expanded(
-                child: SingleChildScrollView(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 20,
-                    vertical: 15,
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      _sectionTitle("Informasi Pelapor"),
-                      _pair(
-                        context,
-                        _flatBox("Nama Lengkap", e.nama),
-                        _flatBox("Perusahaan", e.perusahaan),
-                      ),
-                      const SizedBox(height: 12),
-                      _pair(
-                        context,
-                        _flatBox("Department", e.department),
-                        _flatBox("Jabatan", e.jabatan),
-                      ),
-                      const SizedBox(height: 12),
-                      _pair(
-                        context,
-                        _flatBox("No Lambung Unit", e.noLambungUnit),
-                        _flatBox("HM Unit", e.hmUnit),
-                      ),
-                      const SizedBox(height: 12),
-                      _pair(
-                        context,
-                        _flatBox("Tanggal", formatTanggal(e.tanggal)),
-                        _flatBox("Shift Kerja", e.shiftKerja),
-                      ),
-                      const SizedBox(height: 12),
-                      const Padding(
-                        padding: EdgeInsets.symmetric(vertical: 16),
-                        child: Divider(thickness: 0.5),
-                      ),
-                      _sectionTitle("Item Pemeriksaan"),
-                      _pair(
-                        context,
-                        _flatBox("Level Oil Mesin", e.opsiItem1),
-                        _flatBox("Temperatur Oli", e.opsiItem2),
-                      ),
-                      const SizedBox(height: 12),
-                      _pair(
-                        context,
-                        _flatBox("Pipa Pengisap Air (Inlet)", e.opsiItem3),
-                        _flatBox("Valve On / Off", e.opsiItem4),
-                      ),
-                      const SizedBox(height: 12),
-                      _pair(
-                        context,
-                        _flatBox("Filter Udara", e.opsiItem5),
-                        _flatBox("Pipa Keluaran Air (Outlet)", e.opsiItem6),
-                      ),
-                      const SizedBox(height: 12),
-                      _pair(
-                        context,
-                        _flatBox("APAR / Fire Extinguisher", e.opsiItem7),
-                        _flatBox("Suhu Mesin", e.opsiItem8),
-                      ),
-                      const SizedBox(height: 12),
-                      _pair(
-                        context,
-                        _flatBox("Mesin", e.opsiItem9),
-                        _flatBox("Putaran Mesin", e.opsiItem10),
-                      ),
-                      const SizedBox(height: 12),
-                      _pair(
-                        context,
-                        _flatBox("Flow Meter Mesin", e.opsiItem11),
-                        _flatBox("Level Air Aki", e.opsiItem12),
-                      ),
-                      const SizedBox(height: 12),
-                      _pair(
-                        context,
-                        _flatBox("Sistem Alarm", e.opsiItem13),
-                        _flatBox("Level Air Radiator", e.opsiItem14),
-                      ),
-                      const SizedBox(height: 12),
-                      _pair(
-                        context,
-                        _flatBox("Vee Belt", e.opsiItem15),
-                        _flatBox("Level BBM", e.opsiItem16),
-                      ),
-                      const SizedBox(height: 12),
-                      _pair(
-                        context,
-                        _flatBox("Pipa Pengisian BBM", e.opsiItem17),
-                        _flatBox("Penutup Mesin", e.opsiItem18),
-                      ),
-                      const SizedBox(height: 12),
-                      _pair(
-                        context,
-                        _flatBox("Alat Pengukur Penggunaan Air", e.opsiItem19),
-                        _flatBox("Kondisi Mur / Baut", e.opsiItem20),
-                      ),
-                      const SizedBox(height: 12),
-                      const Padding(
-                        padding: EdgeInsets.symmetric(vertical: 16),
-                        child: Divider(thickness: 0.5),
-                      ),
-                      _sectionTitle("Alat Keselamatan Diatas Air"),
-                      _pair(
-                        context,
-                        _flatBox("Life Jacket", e.alatKeselamatanAir1),
-                        _flatBox("Ring Boy", e.alatKeselamatanAir2),
-                      ),
-                      const SizedBox(height: 12),
-                      _pair(
-                        context,
-                        _flatBox("Perahu Untuk Pekerja", e.alatKeselamatanAir3),
-                        _flatBox(
-                          "Tali Pengikat / Jangkar",
-                          e.alatKeselamatanAir4,
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      const Padding(
-                        padding: EdgeInsets.symmetric(vertical: 16),
-                        child: Divider(thickness: 0.5),
-                      ),
-                      _flatBox(
-                        "Apakah unit telah aman dioperasikan",
-                        e.unitAman,
-                      ),
-                      const SizedBox(height: 30),
-                    ],
-                  ),
-                ),
-              ),
-              Padding(
-                padding: const EdgeInsets.all(20),
-                child: Container(
-                  width: double.infinity,
-                  height: 55,
-                  decoration: BoxDecoration(
-                    gradient: primaryGradient,
-                    borderRadius: BorderRadius.circular(16),
-                  ),
-                  child: ElevatedButton(
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.transparent,
-                      shadowColor: Colors.transparent,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(16),
-                      ),
-                    ),
-                    onPressed: () => Navigator.pop(context),
-                    child: const Text(
-                      "Tutup",
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.bold,
-                        fontSize: 16,
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ],
-          ),
-        );
-      },
-    );
-  }
-
-  // ===== section title =====
-  Widget _sectionTitle(String title) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
-      child: ShaderMask(
-        shaderCallback: (bounds) => primaryGradient.createShader(
-          Rect.fromLTWH(0, 0, bounds.width, bounds.height),
-        ),
-        child: Text(
-          title.toUpperCase(),
-          style: const TextStyle(
-            fontSize: 13,
-            fontWeight: FontWeight.w900,
-            color: Colors.white,
-            letterSpacing: 1.2,
-          ),
-        ),
-      ),
-    );
-  }
-
-  // ===== flatBox (status-aware, tapi label/data tetap) =====
-  Widget _flatBox(String label, String? value, {bool isLongText = false}) {
-    final safeValue = (value ?? "-").trim();
-    final k = _kind(value);
-    final isStatusValue = k != _StatusKind.none;
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          label,
-          style: TextStyle(
-            fontSize: 15,
-            color: Colors.grey[600],
-            fontWeight: FontWeight.w600,
-          ),
-        ),
-        const SizedBox(height: 6),
-        Container(
-          width: double.infinity,
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-          decoration: BoxDecoration(
-            color: isStatusValue ? _kBg(k) : const Color(0xfff5f7fb),
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(
-              color: isStatusValue ? _kBorder(k) : const Color(0xffe8ecf3),
-            ),
-          ),
-          child: isStatusValue
-              ? Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        safeValue.isEmpty ? "-" : safeValue,
-                        style: TextStyle(
-                          fontWeight: FontWeight.w800,
-                          fontSize: 14,
-                          color: _kText(k),
-                          height: 1.25,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Container(
-                      width: 30,
-                      height: 30,
-                      decoration: BoxDecoration(
-                        color: _kBorder(k).withOpacity(0.20),
-                        shape: BoxShape.circle,
-                        border: Border.all(color: _kBorder(k), width: 1.4),
-                      ),
-                      child: Icon(_kIcon(k), size: 18, color: _kText(k)),
-                    ),
-                  ],
-                )
-              : Text(
-                  safeValue.isEmpty ? "-" : safeValue,
-                  style: TextStyle(
-                    fontWeight: FontWeight.w600,
-                    fontSize: 14,
-                    color: Colors.black,
-                    height: isLongText ? 1.5 : 1.2,
-                  ),
-                ),
-        ),
-      ],
-    );
-  }
-
-  // ===== cells =====
-  Widget cellWrap(String text) {
-    final t = text.trim().isEmpty ? "-" : text.trim();
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-      child: Align(
-        alignment: Alignment.center,
-        child: Text(
-          t,
-          textAlign: TextAlign.center,
-          softWrap: true,
-          style: TextStyle(
-            height: 1.35,
-            color: Colors.black.withOpacity(0.72),
-            fontWeight: FontWeight.w600,
-          ),
-        ),
-      ),
-    );
-  }
-
-  String formatTanggal(String value) {
-    if (value.isEmpty) return "-";
-    try {
-      final date = DateTime.parse(value);
-      return DateFormat("dd/MM/yyyy").format(date);
-    } catch (_) {
-      return value;
-    }
-  }
-
-  Widget cell(String text, {FontWeight? weight}) {
-    final t = text.trim().isEmpty ? "-" : text.trim();
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      child: Align(
-        alignment: Alignment.center,
-        child: Tooltip(
-          message: t,
-          child: Text(
-            t,
-            textAlign: TextAlign.center,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(
-              fontWeight: weight ?? FontWeight.w700,
-              color: Colors.black.withOpacity(0.72),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  // ===== FILES DIALOG (konsisten) =====
-  void _showFilesDialog(List<String> files) {
-    showDialog(
-      context: context,
-      builder: (_) => Dialog(
-        backgroundColor: Colors.transparent,
-        insetPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
-        child: Container(
-          padding: const EdgeInsets.all(20),
-          decoration: BoxDecoration(
-            color: const Color(0xfff9fafc),
-            borderRadius: BorderRadius.circular(20),
-            boxShadow: const [
-              BoxShadow(
-                color: Colors.black12,
-                blurRadius: 12,
-                offset: Offset(0, 6),
-              ),
-            ],
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 16,
-                  vertical: 14,
-                ),
-                decoration: BoxDecoration(
-                  gradient: primaryGradient,
-                  borderRadius: BorderRadius.circular(16),
-                ),
-                child: const Row(
-                  children: [
-                    Icon(Icons.folder_open_rounded, color: Colors.white),
-                    SizedBox(width: 10),
-                    Expanded(
-                      child: Text(
-                        "Dokumen Terlampir",
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.w900,
-                          fontSize: 16,
-                          letterSpacing: 0.2,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 16),
-              ...files.map((file) {
-                final isImg = isImageFile(file);
-
-                return Container(
-                  margin: const EdgeInsets.only(bottom: 12),
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 12,
-                  ),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(14),
-                    boxShadow: const [
-                      BoxShadow(
-                        color: Colors.black12,
-                        blurRadius: 6,
-                        offset: Offset(0, 3),
-                      ),
-                    ],
-                  ),
-                  child: Row(
-                    children: [
-                      Container(
-                        padding: const EdgeInsets.all(8),
-                        decoration: BoxDecoration(
-                          color: isImg
-                              ? Colors.blue.shade50
-                              : Colors.red.shade50,
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: Icon(
-                          isImg
-                              ? Icons.image_outlined
-                              : Icons.picture_as_pdf_outlined,
-                          color: isImg
-                              ? Colors.blue.shade700
-                              : Colors.red.shade700,
-                          size: 20,
-                        ),
-                      ),
-                      const SizedBox(width: 14),
-                      Expanded(
-                        child: Text(
-                          file,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            fontWeight: FontWeight.w500,
-                            fontSize: 14,
-                            color: Color(0xff333333),
-                          ),
-                        ),
-                      ),
-                      IconButton(
-                        icon: Icon(
-                          Icons.visibility_outlined,
-                          color: Colors.grey.shade600,
-                          size: 20,
-                        ),
-                        tooltip: "Preview",
-                        onPressed: () async {
-                          Navigator.pop(context);
-                          if (isImg) {
-                            _previewImage(file);
-                          } else {
-                            await downloadAndOpenFile(
-                              "http://safety.borneo.co.id/uploads/$file",
-                              file,
-                            );
-                          }
-                        },
-                      ),
-                      IconButton(
-                        icon: Icon(
-                          Icons.download_outlined,
-                          color: Colors.green.shade700,
-                          size: 20,
-                        ),
-                        tooltip: "Download",
-                        onPressed: () {
-                          Navigator.pop(context);
-                          downloadWithPopup(
-                            context: context,
-                            url: "http://safety.borneo.co.id/uploads/$file",
-                            fileName: file,
-                            isImage: isImg,
-                          );
-                        },
-                      ),
-                    ],
-                  ),
-                );
-              }).toList(),
               const SizedBox(height: 12),
-              SizedBox(
-                width: double.infinity,
-                child: Container(
-                  decoration: BoxDecoration(
-                    gradient: primaryGradient,
-                    borderRadius: BorderRadius.circular(16),
-                  ),
-                  child: ElevatedButton(
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.transparent,
-                      shadowColor: Colors.transparent,
-                      padding: const EdgeInsets.symmetric(vertical: 14),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(16),
-                      ),
-                      elevation: 0,
-                    ),
-                    onPressed: () => Navigator.pop(context),
-                    child: const Text(
-                      "Tutup",
-                      style: TextStyle(
-                        fontWeight: FontWeight.bold,
-                        fontSize: 16,
-                        color: Colors.white,
-                      ),
-                    ),
-                  ),
-                ),
+              pairP2H(
+                context,
+                flatBoxP2H("No Lambung Unit", e.noLambungUnit),
+                flatBoxP2H("HM Unit", e.hmUnit),
               ),
+              const SizedBox(height: 12),
+              pairP2H(
+                context,
+                flatBoxP2H("Tanggal", formatTanggal(e.tanggal)),
+                flatBoxP2H("Shift Kerja", e.shiftKerja),
+              ),
+              const SizedBox(height: 12),
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 16),
+                child: Divider(thickness: 0.5),
+              ),
+              buildResultSectionTitle("Item Pemeriksaan"),
+              pairP2H(
+                context,
+                flatBoxP2H("Level Oil Mesin", e.opsiItem1),
+                flatBoxP2H("Temperatur Oli", e.opsiItem2),
+              ),
+              const SizedBox(height: 12),
+              pairP2H(
+                context,
+                flatBoxP2H("Pipa Pengisap Air (Inlet)", e.opsiItem3),
+                flatBoxP2H("Valve On / Off", e.opsiItem4),
+              ),
+              const SizedBox(height: 12),
+              pairP2H(
+                context,
+                flatBoxP2H("Filter Udara", e.opsiItem5),
+                flatBoxP2H("Pipa Keluaran Air (Outlet)", e.opsiItem6),
+              ),
+              const SizedBox(height: 12),
+              pairP2H(
+                context,
+                flatBoxP2H("APAR / Fire Extinguisher", e.opsiItem7),
+                flatBoxP2H("Suhu Mesin", e.opsiItem8),
+              ),
+              const SizedBox(height: 12),
+              pairP2H(
+                context,
+                flatBoxP2H("Mesin", e.opsiItem9),
+                flatBoxP2H("Putaran Mesin", e.opsiItem10),
+              ),
+              const SizedBox(height: 12),
+              pairP2H(
+                context,
+                flatBoxP2H("Flow Meter Mesin", e.opsiItem11),
+                flatBoxP2H("Level Air Aki", e.opsiItem12),
+              ),
+              const SizedBox(height: 12),
+              pairP2H(
+                context,
+                flatBoxP2H("Sistem Alarm", e.opsiItem13),
+                flatBoxP2H("Level Air Radiator", e.opsiItem14),
+              ),
+              const SizedBox(height: 12),
+              pairP2H(
+                context,
+                flatBoxP2H("Vee Belt", e.opsiItem15),
+                flatBoxP2H("Level BBM", e.opsiItem16),
+              ),
+              const SizedBox(height: 12),
+              pairP2H(
+                context,
+                flatBoxP2H("Pipa Pengisian BBM", e.opsiItem17),
+                flatBoxP2H("Penutup Mesin", e.opsiItem18),
+              ),
+              const SizedBox(height: 12),
+              pairP2H(
+                context,
+                flatBoxP2H("Alat Pengukur Penggunaan Air", e.opsiItem19),
+                flatBoxP2H("Kondisi Mur / Baut", e.opsiItem20),
+              ),
+              const SizedBox(height: 12),
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 16),
+                child: Divider(thickness: 0.5),
+              ),
+              buildResultSectionTitle("Alat Keselamatan Diatas Air"),
+              pairP2H(
+                context,
+                flatBoxP2H("Life Jacket", e.alatKeselamatanAir1),
+                flatBoxP2H("Ring Boy", e.alatKeselamatanAir2),
+              ),
+              const SizedBox(height: 12),
+              pairP2H(
+                context,
+                flatBoxP2H("Perahu Untuk Pekerja", e.alatKeselamatanAir3),
+                flatBoxP2H("Tali Pengikat / Jangkar", e.alatKeselamatanAir4),
+              ),
+              const SizedBox(height: 12),
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 16),
+                child: Divider(thickness: 0.5),
+              ),
+              flatBoxP2H("Apakah unit telah aman dioperasikan", e.unitAman),
+              const SizedBox(height: 30),
             ],
           ),
-        ),
-      ),
-    );
-  }
-
-  // ===== preview (tetap) + guard =====
-  void _previewImage(String file) {
-    final controller = TransformationController();
-    TapDownDetails? doubleTapDetails;
-
-    showGeneralDialog(
-      context: context,
-      barrierDismissible: true,
-      barrierLabel: "",
-      barrierColor: Colors.transparent,
-      pageBuilder: (_, __, ___) {
-        double dragOffset = 0;
-
-        return StatefulBuilder(
-          builder: (context, setState) {
-            return GestureDetector(
-              onVerticalDragUpdate: (details) {
-                dragOffset += details.delta.dy;
-                setState(() {});
-              },
-              onVerticalDragEnd: (_) {
-                if (dragOffset.abs() > 120) {
-                  Navigator.pop(context);
-                } else {
-                  setState(() => dragOffset = 0);
-                }
-              },
-              child: Stack(
-                children: [
-                  BackdropFilter(
-                    filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
-                    child: Container(color: Colors.black.withOpacity(0.6)),
-                  ),
-                  Transform.translate(
-                    offset: Offset(0, dragOffset),
-                    child: Center(
-                      child: Hero(
-                        tag: file,
-                        child: GestureDetector(
-                          onDoubleTapDown: (details) =>
-                              doubleTapDetails = details,
-                          onDoubleTap: () {
-                            if (doubleTapDetails == null) return;
-                            final position = doubleTapDetails!.localPosition;
-
-                            if (controller.value != Matrix4.identity()) {
-                              controller.value = Matrix4.identity();
-                            } else {
-                              controller.value = Matrix4.identity()
-                                ..translate(-position.dx * 2, -position.dy * 2)
-                                ..scale(3.0);
-                            }
-                          },
-                          child: InteractiveViewer(
-                            transformationController: controller,
-                            minScale: 1,
-                            maxScale: 4,
-                            child: ClipRRect(
-                              borderRadius: BorderRadius.circular(20),
-                              child: Image.network(
-                                "http://safety.borneo.co.id/uploads/$file",
-                                fit: BoxFit.contain,
-                                loadingBuilder: (context, child, progress) {
-                                  if (progress == null) return child;
-                                  return const SizedBox(
-                                    height: 300,
-                                    child: Center(
-                                      child: CircularProgressIndicator(),
-                                    ),
-                                  );
-                                },
-                                errorBuilder: (_, __, ___) => const SizedBox(
-                                  height: 300,
-                                  child: Center(
-                                    child: Text(
-                                      "Gagal memuat gambar",
-                                      style: TextStyle(color: Colors.white),
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                  Positioned(
-                    top: 40,
-                    right: 20,
-                    child: GestureDetector(
-                      onTap: () => Navigator.pop(context),
-                      child: Container(
-                        padding: const EdgeInsets.all(8),
-                        decoration: BoxDecoration(
-                          color: Colors.black45,
-                          borderRadius: BorderRadius.circular(30),
-                        ),
-                        child: const Icon(Icons.close, color: Colors.white),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            );
-          },
         );
       },
     );
-  }
-
-  Future<void> downloadAndOpenFile(String url, String fileName) async {
-    try {
-      Directory dir;
-
-      if (Platform.isAndroid) {
-        final status = await Permission.storage.request();
-        if (!status.isGranted) throw "Izin penyimpanan ditolak";
-        dir = Directory("/storage/emulated/0/Download");
-      } else {
-        dir = await getApplicationDocumentsDirectory();
-      }
-
-      if (!await dir.exists()) await dir.create(recursive: true);
-
-      final response = await http.get(Uri.parse(url));
-      if (response.statusCode != 200) throw "Gagal mengunduh file";
-
-      final file = File("${dir.path}/$fileName");
-      await file.writeAsBytes(response.bodyBytes);
-
-      final result = await OpenFile.open(file.path);
-      if (result.type != ResultType.done) throw result.message;
-    } catch (e) {
-      if (!mounted) return;
-      showDialog(
-        context: context,
-        builder: (_) => AlertDialog(
-          title: const Text("Gagal membuka file"),
-          content: Text(e.toString()),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text("Tutup"),
-            ),
-          ],
-        ),
-      );
-    }
-  }
-
-  void _showDownloadProgressDialog(
-    BuildContext context,
-    ValueNotifier<String> text,
-  ) {
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (_) {
-        return Dialog(
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(16),
-          ),
-          child: Padding(
-            padding: const EdgeInsets.all(20),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const SizedBox(
-                  width: 28,
-                  height: 28,
-                  child: CircularProgressIndicator(strokeWidth: 3),
-                ),
-                const SizedBox(width: 16),
-                ValueListenableBuilder<String>(
-                  valueListenable: text,
-                  builder: (_, value, __) =>
-                      Text(value, style: const TextStyle(fontSize: 14)),
-                ),
-              ],
-            ),
-          ),
-        );
-      },
-    );
-  }
-
-  void _showDownloadSuccessDialog(BuildContext context, String filePath) {
-    showDialog(
-      context: context,
-      builder: (_) {
-        return Dialog(
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(20),
-          ),
-          child: Padding(
-            padding: const EdgeInsets.all(22),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Container(
-                  padding: const EdgeInsets.all(14),
-                  decoration: const BoxDecoration(
-                    color: Colors.green,
-                    shape: BoxShape.circle,
-                  ),
-                  child: const Icon(Icons.check, color: Colors.white, size: 30),
-                ),
-                const SizedBox(height: 16),
-                const Text(
-                  "Download Berhasil",
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  filePath,
-                  textAlign: TextAlign.center,
-                  style: TextStyle(fontSize: 12, color: Colors.grey[600]),
-                ),
-                const SizedBox(height: 20),
-                SizedBox(
-                  width: double.infinity,
-                  child: ElevatedButton(
-                    style: ElevatedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(vertical: 14),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(14),
-                      ),
-                    ),
-                    onPressed: () => Navigator.pop(context),
-                    child: const Text("Tutup"),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        );
-      },
-    );
-  }
-
-  Future<void> downloadWithPopup({
-    required BuildContext context,
-    required String url,
-    required String fileName,
-    bool isImage = false,
-  }) async {
-    final progressText = ValueNotifier("Menyiapkan unduhan...");
-    _showDownloadProgressDialog(context, progressText);
-
-    try {
-      if (Platform.isAndroid) {
-        final status = await Permission.storage.request();
-        if (!status.isGranted) {
-          Navigator.pop(context);
-          return;
-        }
-      }
-
-      progressText.value = "Mengunduh file...";
-      final response = await http.get(Uri.parse(url));
-      if (response.statusCode != 200) throw "Gagal download";
-
-      Directory dir;
-      if (Platform.isAndroid) {
-        dir = Directory(
-          isImage
-              ? "/storage/emulated/0/Pictures/Safe Day"
-              : "/storage/emulated/0/Download",
-        );
-      } else {
-        dir = await getApplicationDocumentsDirectory();
-      }
-
-      if (!await dir.exists()) await dir.create(recursive: true);
-
-      final safeName = fileName.split('/').last;
-      final filePath = "${dir.path}/$safeName";
-      final file = File(filePath);
-
-      progressText.value = "Menyimpan file...";
-      await file.writeAsBytes(response.bodyBytes);
-
-      if (Platform.isAndroid && isImage) {
-        await MediaScanner.loadMedia(path: filePath);
-        await MediaScanner.loadMedia(path: dir.path);
-      }
-
-      Navigator.pop(context);
-      _showDownloadSuccessDialog(context, filePath);
-    } catch (e) {
-      Navigator.pop(context);
-      if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text("Download gagal: $e")));
-    }
   }
 }

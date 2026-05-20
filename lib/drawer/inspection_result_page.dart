@@ -7,7 +7,38 @@ import 'package:safety_apps/drawer/inspeksi/inspeksi_kantor_result.dart';
 import 'package:safety_apps/drawer/inspeksi/inspeksi_mtd_result.dart';
 
 class InspectionResultPage extends StatelessWidget {
-  const InspectionResultPage({super.key});
+  final bool canSeeInspeksiCHP;
+  final bool canSeeInspeksiJalanTambang;
+  final bool canSeeInspeksiKantor;
+  final bool canSeeInspeksiMTD;
+  final bool canSeeInspeksiPlant;
+  final bool canSeeInspeksiFasilitasBBM;
+  final String userRole;
+
+  const InspectionResultPage({
+    super.key,
+    this.canSeeInspeksiCHP = false,
+    this.canSeeInspeksiJalanTambang = false,
+    this.canSeeInspeksiKantor = false,
+    this.canSeeInspeksiMTD = false,
+    this.canSeeInspeksiPlant = false,
+    this.canSeeInspeksiFasilitasBBM = false,
+    this.userRole = "",
+  });
+
+  bool get _isAdminOrSuperadmin {
+    final role = userRole.toLowerCase().trim();
+    return role == "admin" || role == "superadmin";
+  }
+
+  bool get _canShowJalanTambang =>
+      _isAdminOrSuperadmin || canSeeInspeksiJalanTambang;
+  bool get _canShowKantor => _isAdminOrSuperadmin || canSeeInspeksiKantor;
+  bool get _canShowMTD => _isAdminOrSuperadmin || canSeeInspeksiMTD;
+  bool get _canShowPlant => _isAdminOrSuperadmin || canSeeInspeksiPlant;
+  bool get _canShowCHP => _isAdminOrSuperadmin || canSeeInspeksiCHP;
+  bool get _canShowFasilitasBBM =>
+      _isAdminOrSuperadmin || canSeeInspeksiFasilitasBBM;
 
   @override
   Widget build(BuildContext context) {
@@ -57,113 +88,123 @@ class InspectionResultPage extends StatelessWidget {
       body: ListView(
         padding: const EdgeInsets.fromLTRB(18, 22, 18, 24),
         children: [
-          _menuCardPremium(
-            context: context,
-            title: "Inspeksi Jalan Tambang",
-            icon: Icons.traffic,
-            onTap: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (_) => InspeksiJalanTambangResultPage(),
-                ),
-              );
-            },
-          ),
+          if (_canShowJalanTambang)
+            _menuCardPremium(
+              context: context,
+              title: "Inspeksi Jalan Tambang",
+              icon: Icons.traffic,
+              onTap: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => InspeksiJalanTambangResultPage(),
+                  ),
+                );
+              },
+            ),
 
-          _menuCardPremium(
-            context: context,
-            title: "Inspeksi Kantor",
-            icon: Icons.apartment,
-            onTap: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => InspeksiKantorResultPage()),
-              );
-            },
-          ),
+          if (_canShowKantor)
+            _menuCardPremium(
+              context: context,
+              title: "Inspeksi Kantor",
+              icon: Icons.apartment,
+              onTap: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => InspeksiKantorResultPage()),
+                );
+              },
+            ),
 
-          _menuCardPremium(
-            context: context,
-            title: "Inspeksi Handak & Blasting",
-            icon: Icons.bolt,
-            enabled: false,
-            onTap: () {},
-          ),
+          if (_isAdminOrSuperadmin)
+            _menuCardPremium(
+              context: context,
+              title: "Inspeksi Handak & Blasting",
+              icon: Icons.bolt,
+              enabled: false,
+              onTap: () {},
+            ),
 
-          _menuCardPremium(
-            context: context,
-            title: "Inspeksi Mess, Toilet, Dapur",
-            icon: Icons.home_filled,
-            onTap: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => InspeksiMTDResultPage()),
-              );
-            },
-          ),
+          if (_canShowMTD)
+            _menuCardPremium(
+              context: context,
+              title: "Inspeksi Mess, Toilet, Dapur",
+              icon: Icons.home_filled,
+              onTap: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => InspeksiMTDResultPage()),
+                );
+              },
+            ),
 
-          _menuCardPremium(
-            context: context,
-            title: "Inspeksi Plant",
-            icon: Icons.factory,
-            onTap: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => InspeksiPlantResultPage()),
-              );
-            },
-          ),
+          if (_canShowPlant)
+            _menuCardPremium(
+              context: context,
+              title: "Inspeksi Plant",
+              icon: Icons.factory,
+              onTap: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => InspeksiPlantResultPage()),
+                );
+              },
+            ),
 
-          _menuCardPremium(
-            context: context,
-            title: "Inspeksi Fasilitas Hydrokarbon",
-            icon: Icons.local_gas_station,
-            enabled: false,
-            onTap: () {},
-          ),
+          if (_isAdminOrSuperadmin)
+            _menuCardPremium(
+              context: context,
+              title: "Inspeksi Fasilitas Hydrokarbon",
+              icon: Icons.local_gas_station,
+              enabled: false,
+              onTap: () {},
+            ),
 
-          _menuCardPremium(
-            context: context,
-            title: "Inspeksi Environment",
-            icon: Icons.eco,
-            enabled: false,
-            onTap: () {},
-          ),
+          if (_isAdminOrSuperadmin)
+            _menuCardPremium(
+              context: context,
+              title: "Inspeksi Environment",
+              icon: Icons.eco,
+              enabled: false,
+              onTap: () {},
+            ),
 
-          _menuCardPremium(
-            context: context,
-            title: "Health Inspection",
-            icon: Icons.health_and_safety,
-            enabled: false,
-            onTap: () {},
-          ),
+          if (_isAdminOrSuperadmin)
+            _menuCardPremium(
+              context: context,
+              title: "Health Inspection",
+              icon: Icons.health_and_safety,
+              enabled: false,
+              onTap: () {},
+            ),
 
-          _menuCardPremium(
-            context: context,
-            title: "Inspeksi CHP",
-            icon: Icons.fire_extinguisher,
-            onTap: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => InspeksiCHPResultPage()),
-              );
-            },
-          ),
+          if (_canShowCHP)
+            _menuCardPremium(
+              context: context,
+              title: "Inspeksi CHP",
+              icon: Icons.fire_extinguisher,
+              onTap: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => InspeksiCHPResultPage()),
+                );
+              },
+            ),
 
-          _menuCardPremium(
-            context: context,
-            title: "Inspeksi Fasilitas BBM",
-            icon: Icons.local_gas_station_outlined,
-            onTap: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (_) => InspeksiFasilitasBBMResultPage(),
-                ),
-              );
-            },
-          ),
+          if (_canShowFasilitasBBM)
+            _menuCardPremium(
+              context: context,
+              title: "Inspeksi Fasilitas BBM",
+              icon: Icons.local_gas_station_outlined,
+              onTap: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => InspeksiFasilitasBBMResultPage(),
+                  ),
+                );
+              },
+            ),
         ],
       ),
     );

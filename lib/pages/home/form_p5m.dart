@@ -1,15 +1,20 @@
-import 'dart:io';
+import 'dart:typed_data';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:safety_apps/models/dropdown_item.dart';
+import 'package:safety_apps/service/pending/pending_form_helper.dart';
+import 'package:safety_apps/service/pending/retry_submit_helper.dart';
 import 'package:safety_apps/session/auth_session.dart';
 import 'package:safety_apps/widgets/checkbox/checkbox_form.dart';
-import 'package:safety_apps/widgets/dropdown/dropdown_jabatan.dart';
+import 'package:safety_apps/widgets/result/status_pending_dialog.dart';
+import 'package:safety_apps/widgets/search_dropdown.dart';
+import 'package:safety_apps/widgets/submit_loading_dialog.dart';
+import 'package:safety_apps/widgets/validation_error_dialog.dart';
 import '../../service/p5m_service.dart';
 import '../../widgets/label_text.dart';
 import '../../widgets/input/input_field.dart';
 import '../../widgets/upload_box.dart';
-import '../../widgets/dropdown/dropdown_department.dart';
-import '../../widgets/dropdown/dropdown_perusahaan.dart';
 
 class FormP5MPage extends StatefulWidget {
   @override
@@ -22,18 +27,41 @@ class _FormP5MPageState extends State<FormP5MPage> {
   TextEditingController topik = TextEditingController();
   TextEditingController umpan_balik = TextEditingController();
 
-  String? department;
-  String? jabatan;
-  String? perusahaan;
+  @override
+  void dispose() {
+    nama.dispose();
+    nama_pembicara.dispose();
+    topik.dispose();
+    umpan_balik.dispose();
+    _submitProgressText.dispose();
+    super.dispose();
+  }
+
+  DropdownItemModel? selectedDepartment;
+  DropdownItemModel? selectedPerusahaan;
+  DropdownItemModel? selectedJabatan;
+
+  String? departmentManual;
+  String? perusahaanManual;
+  String? jabatanManual;
 
   String? kondisi_kesehatan;
   String? status_hari_kerja;
   String? siap_kerja;
   String? jam_tidur;
 
-  File? fileFoto;
+  XFile? fileFoto;
+  Uint8List? fotoBytes;
 
   bool _isSubmitting = false;
+
+  static const int _maxAutoRetry = 3;
+  static const Duration _submitTimeout = Duration(seconds: 15);
+  static const Duration _retryDelay = Duration(seconds: 1);
+
+  final ValueNotifier<String> _submitProgressText = ValueNotifier(
+    "Mengirim data P5M...",
+  );
 
   static const fNamaPeserta = "Nama Peserta";
   static const fPerusahaan = "Perusahaan";
@@ -52,17 +80,34 @@ class _FormP5MPageState extends State<FormP5MPage> {
     List<String> missing = [];
 
     if (nama.text.trim().isEmpty) missing.add(fNamaPeserta);
-    if (perusahaan == null || perusahaan!.isEmpty) missing.add(fPerusahaan);
-    if (department == null || department!.isEmpty) missing.add(fDepartment);
     if (nama_pembicara.text.trim().isEmpty) missing.add(fNamaPembicara);
     if (topik.text.trim().isEmpty) missing.add(fTopik);
-    if (jabatan == null || jabatan!.isEmpty) missing.add(fJabatan);
     if (kondisi_kesehatan == null) missing.add(fKondisiKesehatan);
     if (jam_tidur == null) missing.add(fJamTidur);
     if (siap_kerja == null) missing.add(fSiapKerja);
     if (status_hari_kerja == null) missing.add(fStatusHariKerja);
     if (umpan_balik.text.trim().isEmpty) missing.add(fUmpanBalik);
     if (fileFoto == null) missing.add(fFotoKegiatan);
+    if (selectedDepartment == null) {
+      missing.add(fDepartment);
+    } else if (selectedDepartment!.isOther &&
+        (departmentManual == null || departmentManual!.trim().isEmpty)) {
+      missing.add(fDepartment);
+    }
+
+    if (selectedPerusahaan == null) {
+      missing.add(fPerusahaan);
+    } else if (selectedPerusahaan!.isOther &&
+        (perusahaanManual == null || perusahaanManual!.trim().isEmpty)) {
+      missing.add(fPerusahaan);
+    }
+
+    if (selectedJabatan == null) {
+      missing.add(fJabatan);
+    } else if (selectedJabatan!.isOther &&
+        (jabatanManual == null || jabatanManual!.trim().isEmpty)) {
+      missing.add(fJabatan);
+    }
 
     return missing;
   }
@@ -113,9 +158,75 @@ class _FormP5MPageState extends State<FormP5MPage> {
     XFile? img = await picker.pickImage(source: ImageSource.gallery);
 
     if (img != null) {
-      setState(() => fileFoto = File(img.path));
+      Uint8List? bytes;
+
+      if (kIsWeb) {
+        bytes = await img.readAsBytes();
+      }
+
+      setState(() {
+        fileFoto = img;
+        fotoBytes = bytes;
+      });
+
       _clearMissing(fFotoKegiatan);
     }
+  }
+
+  Map<String, dynamic> _buildP5MPayload() {
+    return {
+      'nama': nama.text,
+      'jabatan': selectedJabatan?.isOther == true
+          ? (jabatanManual ?? "")
+          : (selectedJabatan?.label ?? ""),
+      'department': selectedDepartment?.isOther == true
+          ? (departmentManual ?? "")
+          : (selectedDepartment?.label ?? ""),
+      'perusahaan': selectedPerusahaan?.isOther == true
+          ? (perusahaanManual ?? "")
+          : (selectedPerusahaan?.label ?? ""),
+      'namaPembicara': nama_pembicara.text,
+      'topik': topik.text,
+      'kondisiKesehatan': kondisi_kesehatan ?? "",
+      'jamTidur': jam_tidur ?? "",
+      'siapKerja': siap_kerja ?? "",
+      'statusHariKerja': status_hari_kerja ?? "",
+      'umpanBalik': umpan_balik.text,
+    };
+  }
+
+  List<String> _buildP5MFilePaths() {
+    if (kIsWeb) return [];
+
+    return [
+      if (fileFoto?.path != null && fileFoto!.path.isNotEmpty) fileFoto!.path,
+    ];
+  }
+
+  Future<bool> _submitP5MOnce(Map<String, dynamic> payload) async {
+    return await P5MService.submitP5M(
+      nama: (payload['nama'] ?? '').toString().trim(),
+      jabatan: (payload['jabatan'] ?? '').toString().trim(),
+      department: (payload['department'] ?? '').toString().trim(),
+      perusahaan: (payload['perusahaan'] ?? '').toString().trim(),
+      namaPembicara: (payload['namaPembicara'] ?? '').toString().trim(),
+      topik: (payload['topik'] ?? '').toString().trim(),
+      kondisiKesehatan: (payload['kondisiKesehatan'] ?? '').toString().trim(),
+      jamTidur: (payload['jamTidur'] ?? '').toString().trim(),
+      siapKerja: (payload['siapKerja'] ?? '').toString().trim(),
+      statusHariKerja: (payload['statusHariKerja'] ?? '').toString().trim(),
+      umpanBalik: (payload['umpanBalik'] ?? '').toString().trim(),
+
+      fotoPath: kIsWeb ? null : fileFoto?.path,
+      fotoBytes: kIsWeb ? fotoBytes : null,
+      fotoName: fileFoto?.name,
+    ).timeout(
+      _submitTimeout,
+      onTimeout: () {
+        debugPrint("SUBMIT P5M TIMEOUT");
+        return false;
+      },
+    );
   }
 
   @override
@@ -130,7 +241,7 @@ class _FormP5MPageState extends State<FormP5MPage> {
           flexibleSpace: Container(
             decoration: const BoxDecoration(
               gradient: LinearGradient(
-                colors: [Color(0xffFF5F6D), Color(0xffFF7A45)],
+                colors: [Color(0xff1d63ff), Color(0xff4fa9ff)],
                 begin: Alignment.topLeft,
                 end: Alignment.bottomRight,
               ),
@@ -158,7 +269,7 @@ class _FormP5MPageState extends State<FormP5MPage> {
               padding: const EdgeInsets.all(22),
               decoration: BoxDecoration(
                 gradient: const LinearGradient(
-                  colors: [Color(0xffFF7A45), Color(0xffFF5F6D)],
+                  colors: [Color(0xff1d63ff), Color(0xff4fa9ff)],
                 ),
                 borderRadius: BorderRadius.circular(18),
                 boxShadow: [
@@ -223,27 +334,33 @@ class _FormP5MPageState extends State<FormP5MPage> {
                     readOnly: true,
                   ),
 
-                  LabelText(
-                    fPerusahaan,
-                    showError: _missingFields.contains(fPerusahaan),
-                  ),
-                  DropdownPerusahaan(
-                    value: perusahaan,
-                    onChanged: (v) {
-                      setState(() => perusahaan = v);
-                      if (v != null) _clearMissing(fPerusahaan);
+                  SearchableMasterDropdown(
+                    label: fDepartment,
+                    hint: "Pilih Department",
+                    endpoint: "master/department",
+                    selectedValue: selectedDepartment,
+                    showError: _missingFields.contains(fDepartment),
+                    onChanged: (selected, manualValue) {
+                      setState(() {
+                        selectedDepartment = selected;
+                        departmentManual = manualValue;
+                      });
+                      _clearMissing(fDepartment);
                     },
                   ),
 
-                  LabelText(
-                    fDepartment,
-                    showError: _missingFields.contains(fDepartment),
-                  ),
-                  DropdownDepartment(
-                    value: department,
-                    onChanged: (v) {
-                      setState(() => department = v);
-                      if (v != null) _clearMissing(fDepartment);
+                  SearchableMasterDropdown(
+                    label: fPerusahaan,
+                    hint: "Pilih Perusahaan",
+                    endpoint: "master/perusahaan",
+                    selectedValue: selectedPerusahaan,
+                    showError: _missingFields.contains(fPerusahaan),
+                    onChanged: (selected, manualValue) {
+                      setState(() {
+                        selectedPerusahaan = selected;
+                        perusahaanManual = manualValue;
+                      });
+                      _clearMissing(fPerusahaan);
                     },
                   ),
 
@@ -270,15 +387,18 @@ class _FormP5MPageState extends State<FormP5MPage> {
                       }
                     },
                   ),
-                  LabelText(
-                    fJabatan,
+                  SearchableMasterDropdown(
+                    label: fJabatan,
+                    hint: "Pilih Jabatan",
+                    endpoint: "master/jabatan",
+                    selectedValue: selectedJabatan,
                     showError: _missingFields.contains(fJabatan),
-                  ),
-                  DropdownJabatan(
-                    value: jabatan,
-                    onChanged: (v) {
-                      setState(() => jabatan = v);
-                      if (v != null) _clearMissing(fJabatan);
+                    onChanged: (selected, manualValue) {
+                      setState(() {
+                        selectedJabatan = selected;
+                        jabatanManual = manualValue;
+                      });
+                      _clearMissing(fJabatan);
                     },
                   ),
                   LabelText(
@@ -358,9 +478,7 @@ class _FormP5MPageState extends State<FormP5MPage> {
                     showError: _missingFields.contains(fFotoKegiatan),
                   ),
                   UploadBox(
-                    text: fileFoto == null
-                        ? "Pilih Foto"
-                        : fileFoto!.path.split("/").last,
+                    text: fileFoto == null ? "Pilih Foto" : fileFoto!.name,
                     icon: Icons.photo_camera_back_rounded,
                     onTap: pickFoto,
                   ),
@@ -373,7 +491,7 @@ class _FormP5MPageState extends State<FormP5MPage> {
                         gradient: _isSubmitting
                             ? null
                             : LinearGradient(
-                                colors: [Color(0xffFF5F6D), Color(0xffFF7A45)],
+                                colors: [Color(0xff1d63ff), Color(0xff4fa9ff)],
                               ),
                         color: _isSubmitting ? Colors.grey : null,
                         borderRadius: BorderRadius.circular(10),
@@ -439,240 +557,95 @@ class _FormP5MPageState extends State<FormP5MPage> {
     });
 
     if (missing.isNotEmpty) {
-      showDialog(
+      await ValidationErrorDialog.show(
         context: context,
-        builder: (_) => Dialog(
-          backgroundColor: Colors.transparent,
-          insetPadding: const EdgeInsets.symmetric(horizontal: 24),
-          child: Container(
-            padding: const EdgeInsets.all(22),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(22),
-              boxShadow: [
-                BoxShadow(
-                  blurRadius: 20,
-                  color: Colors.black.withOpacity(0.15),
-                  offset: const Offset(0, 6),
-                ),
-              ],
-            ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 14,
-                  ),
-                  decoration: BoxDecoration(
-                    gradient: const LinearGradient(
-                      colors: [Color(0xffFF5F6D), Color(0xffFF7A45)],
-                    ),
-                    borderRadius: BorderRadius.circular(14),
-                  ),
-                  child: Row(
-                    children: const [
-                      Icon(
-                        Icons.warning_amber_rounded,
-                        color: Colors.white,
-                        size: 26,
-                      ),
-                      SizedBox(width: 10),
-                      Expanded(
-                        child: Text(
-                          "Data Belum Lengkap",
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontWeight: FontWeight.bold,
-                            fontSize: 16,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-
-                const SizedBox(height: 18),
-
-                const Text(
-                  "Field berikut masih kosong:",
-                  style: TextStyle(
-                    fontWeight: FontWeight.w600,
-                    color: Colors.black87,
-                  ),
-                ),
-
-                const SizedBox(height: 10),
-
-                Container(
-                  constraints: const BoxConstraints(maxHeight: 200),
-                  child: SingleChildScrollView(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: missing
-                          .map(
-                            (e) => Padding(
-                              padding: const EdgeInsets.symmetric(vertical: 3),
-                              child: Row(
-                                children: [
-                                  const Icon(
-                                    Icons.circle,
-                                    size: 7,
-                                    color: Colors.redAccent,
-                                  ),
-                                  const SizedBox(width: 8),
-                                  Expanded(
-                                    child: Text(
-                                      e,
-                                      style: const TextStyle(fontSize: 14),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          )
-                          .toList(),
-                    ),
-                  ),
-                ),
-
-                const SizedBox(height: 20),
-
-                SizedBox(
-                  width: double.infinity,
-                  child: ElevatedButton(
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xffFF6A55),
-                      padding: const EdgeInsets.symmetric(vertical: 14),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                    ),
-                    onPressed: () => Navigator.pop(context),
-                    child: const Text(
-                      "Mengerti",
-                      style: TextStyle(color: Colors.white),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
+        missingFields: missing,
       );
-
       return;
     }
 
-    showDialog(
+    setState(() {
+      _isSubmitting = true;
+    });
+
+    _submitProgressText.value = "Mengirim data P5M...";
+
+    SubmitLoadingDialog.show(
       context: context,
-      barrierDismissible: false,
-      builder: (ctx) {
-        return Dialog(
-          backgroundColor: Colors.white,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(16),
-          ),
-          child: Padding(
-            padding: const EdgeInsets.all(20),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: const [
-                CircularProgressIndicator(),
-                SizedBox(width: 20),
-                Text("Mengirim data P5M..."),
-              ],
-            ),
-          ),
-        );
-      },
+      messageNotifier: _submitProgressText,
     );
+
+    final payload = _buildP5MPayload();
+    final filePaths = _buildP5MFilePaths();
 
     bool ok = false;
+    bool savedToPending = false;
 
     try {
-      ok = await P5MService.submitP5M(
-        nama: nama.text,
-        perusahaan: perusahaan ?? "",
-        department: department ?? "",
-        namaPembicara: nama_pembicara.text,
-        topik: topik.text,
-        jabatan: jabatan ?? "",
-        kondisiKesehatan: kondisi_kesehatan ?? "",
-        jamTidur: jam_tidur ?? "",
-        siapKerja: siap_kerja ?? "",
-        statusHariKerja: status_hari_kerja ?? "",
-        umpanBalik: umpan_balik.text,
-        fotoPath: fileFoto?.path,
+      ok = await RetrySubmitHelper.run(
+        maxRetry: _maxAutoRetry,
+        retryDelay: _retryDelay,
+        onProgress: (attempt, maxRetry) {
+          if (!mounted) return;
+
+          _submitProgressText.value = attempt == 1
+              ? "Mengirim data P5M..."
+              : "Mengirim ulang... percobaan $attempt dari $maxRetry";
+        },
+        action: () => _submitP5MOnce(payload),
       );
+
+      if (!ok) {
+        await PendingFormHelper.saveP5M(payload: payload, filePaths: filePaths);
+        savedToPending = true;
+      }
     } catch (_) {
-      ok = false;
+      await PendingFormHelper.saveP5M(payload: payload, filePaths: filePaths);
+      savedToPending = true;
     }
+
     if (!mounted) return;
 
-    setState(() => _isSubmitting = false);
-    Navigator.pop(context);
+    SubmitLoadingDialog.close(context);
 
-    showStatusDialog(
-      context: context,
-      success: ok,
-      onDone: () {
-        Navigator.pop(context);
+    setState(() {
+      _isSubmitting = false;
+    });
 
-        if (ok) {
+    _submitProgressText.value = "Mengirim data P5M...";
+
+    if (ok) {
+      StatusDialog.show(
+        context: context,
+        type: StatusDialogType.success,
+        title: "Berhasil Terkirim",
+        message: "Data berhasil dikirim ke server.",
+        onDone: () {
           Navigator.pop(context);
-        }
-      },
-    );
+          Navigator.pop(context);
+        },
+      );
+    } else if (savedToPending) {
+      StatusDialog.show(
+        context: context,
+        type: StatusDialogType.warning,
+        title: "Tersimpan di Pending",
+        message:
+            "Pengiriman gagal setelah beberapa kali percobaan. Data disimpan di Pending Submission.",
+        onDone: () {
+          Navigator.pop(context);
+        },
+      );
+    } else {
+      StatusDialog.show(
+        context: context,
+        type: StatusDialogType.error,
+        title: "Gagal Terkirim",
+        message: "Data gagal dikirim.",
+        onDone: () {
+          Navigator.pop(context);
+        },
+      );
+    }
   }
-}
-
-void showStatusDialog({
-  required BuildContext context,
-  required bool success,
-  required VoidCallback onDone,
-}) {
-  showDialog(
-    context: context,
-    barrierDismissible: false,
-    builder: (_) => AlertDialog(
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-      contentPadding: const EdgeInsets.symmetric(vertical: 28),
-      content: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(
-            success ? Icons.check_circle_rounded : Icons.cancel_rounded,
-            size: 80,
-            color: success ? Colors.green : Colors.red,
-          ),
-          const SizedBox(height: 16),
-          Text(
-            success ? "Berhasil Terkirim" : "Gagal Terkirim",
-            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            success ? "Data P5M berhasil dikirim" : "Data P5M Belum Lengkap",
-            style: const TextStyle(color: Colors.black54),
-          ),
-          const SizedBox(height: 22),
-          SizedBox(
-            width: 120,
-            child: ElevatedButton(
-              style: ElevatedButton.styleFrom(
-                backgroundColor: success ? Colors.green : Colors.redAccent,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(14),
-                ),
-              ),
-              onPressed: onDone,
-              child: Text("OK", style: TextStyle(color: Colors.white)),
-            ),
-          ),
-        ],
-      ),
-    ),
-  );
 }

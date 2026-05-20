@@ -1,9 +1,7 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 class MasterService {
-  static const _storage = FlutterSecureStorage();
   static const String baseUrl = "http://safety.borneo.co.id";
 
   static Future<List<Map<String, dynamic>>> getSites() async {

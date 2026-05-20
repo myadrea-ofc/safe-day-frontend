@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:safety_apps/main.dart';
 
 void showInAppNotification({
   required BuildContext context,
@@ -6,9 +7,22 @@ void showInAppNotification({
   required String body,
   required VoidCallback onTap,
 }) {
-  final overlay = Overlay.of(context);
+  OverlayState? overlay;
 
-  final overlayEntry = OverlayEntry(
+  try {
+    overlay = Overlay.of(context);
+  } catch (_) {
+    overlay = navigatorKey.currentState?.overlay;
+  }
+
+  if (overlay == null) {
+    debugPrint("In-app notification skipped: overlay not ready");
+    return;
+  }
+
+  late OverlayEntry overlayEntry;
+
+  overlayEntry = OverlayEntry(
     builder: (_) => Positioned(
       top: 50,
       left: 16,
@@ -16,7 +30,12 @@ void showInAppNotification({
       child: Material(
         color: Colors.transparent,
         child: GestureDetector(
-          onTap: onTap,
+          onTap: () {
+            if (overlayEntry.mounted) {
+              overlayEntry.remove();
+            }
+            onTap();
+          },
           child: Container(
             padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
@@ -60,5 +79,9 @@ void showInAppNotification({
 
   overlay.insert(overlayEntry);
 
-  Future.delayed(const Duration(seconds: 4)).then((_) => overlayEntry.remove());
+  Future.delayed(const Duration(seconds: 4), () {
+    if (overlayEntry.mounted) {
+      overlayEntry.remove();
+    }
+  });
 }

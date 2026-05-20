@@ -3,6 +3,7 @@ import 'dart:ui';
 
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
@@ -11,6 +12,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:safety_apps/drawer/change_password.dart';
 import 'package:safety_apps/firebase/firebase_notification_service.dart';
 import 'package:safety_apps/network/device_info_plus.dart';
+import 'package:safety_apps/service/device_id_service.dart';
 import 'package:safety_apps/session/auth_session.dart';
 import 'home_page.dart';
 
@@ -63,12 +65,12 @@ class _LoginPageState extends State<LoginPage> {
   void initState() {
     super.initState();
     resetForm();
+
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       await Future.delayed(const Duration(milliseconds: 800));
-      fetchSites();
+      if (!mounted) return;
+      await fetchSites();
     });
-
-    // fetchSites();
   }
 
   void resetForm() {
@@ -87,62 +89,89 @@ class _LoginPageState extends State<LoginPage> {
   }
 
   Future<bool> isNetworkReady() async {
+    if (kIsWeb) return true;
+
     try {
-      final result = await InternetAddress.lookup('example.com');
-      return result.isNotEmpty && result[0].rawAddress.isNotEmpty;
-    } catch (_) {
+      final result = await InternetAddress.lookup('safety.borneo.co.id');
+      return result.isNotEmpty && result.first.rawAddress.isNotEmpty;
+    } catch (e) {
+      debugPrint("Network check failed: $e");
       return false;
     }
   }
 
   Future<void> fetchSites() async {
+    if (!mounted) return;
+
     setState(() => loadingSites = true);
-    int attempts = 0;
 
-    while (attempts < 5) {
-      if (!mounted) return;
-      if (!await isNetworkReady()) {
-        await Future.delayed(const Duration(seconds: 1));
-        attempts++;
-        continue;
-      }
-
+    for (int attempts = 1; attempts <= 5; attempts++) {
       try {
-        final res = await http.get(
-          Uri.parse("http://safety.borneo.co.id/sites"),
-          headers: {"Content-Type": "application/json"},
-        );
+        if (!kIsWeb) {
+          final networkReady = await isNetworkReady();
+          if (!networkReady) {
+            await Future.delayed(const Duration(seconds: 1));
+            continue;
+          }
+        }
+
+        final res = await http
+            .get(
+              Uri.parse("http://safety.borneo.co.id/sites"),
+              headers: {"Content-Type": "application/json"},
+            )
+            .timeout(const Duration(seconds: 10));
+
+        debugPrint("SITE STATUS: ${res.statusCode}");
+        debugPrint("SITE BODY: ${res.body}");
+
+        if (!mounted) return;
 
         if (res.statusCode == 200) {
           final List data = jsonDecode(res.body);
+
           setState(() {
             siteList = data
-                .map((e) => {"id": e["id"], "name": e["name"]})
+                .map<Map<String, dynamic>>((e) {
+                  return {
+                    "id": e["id"],
+                    "name": (e["site_name"] ?? e["name"] ?? "").toString(),
+                  };
+                })
+                .where((e) => e["name"].toString().isNotEmpty)
                 .toList();
+
             loadingSites = false;
           });
+
           return;
-        } else {
-          throw Exception("Failed to fetch sites");
         }
-      } catch (_) {
+
+        debugPrint("Fetch sites failed status: ${res.statusCode}");
+      } catch (e) {
+        debugPrint("Fetch sites error attempt $attempts: $e");
         await Future.delayed(const Duration(seconds: 1));
-        attempts++;
       }
     }
 
-    if (mounted) setState(() => loadingSites = false);
+    if (!mounted) return;
+    setState(() => loadingSites = false);
   }
 
   Future<void> fetchDepartments(int siteId) async {
+    if (!mounted) return;
+
     setState(() => loadingDepartments = true);
+
     try {
       final res = await http.get(
         Uri.parse("http://safety.borneo.co.id/departments?site_id=$siteId"),
         headers: {"Content-Type": "application/json"},
       );
 
-      if (res.statusCode == 200 && mounted) {
+      if (!mounted) return;
+
+      if (res.statusCode == 200) {
         final data = jsonDecode(res.body);
         setState(() {
           departmentList = List<Map<String, dynamic>>.from(data);
@@ -154,6 +183,7 @@ class _LoginPageState extends State<LoginPage> {
         setState(() => loadingDepartments = false);
       }
     } catch (_) {
+      if (!mounted) return;
       setState(() => loadingDepartments = false);
     }
   }
@@ -174,15 +204,18 @@ class _LoginPageState extends State<LoginPage> {
     setState(() => isLoggingIn = true);
 
     try {
-      final String deviceId = await DeviceHelper.getInstallationId();
-
+      final String deviceId = await DeviceIdService.getOrCreateDeviceId();
       if (deviceId.isEmpty) {
         throw Exception("Device ID tidak ditemukan");
       }
 
       await storage.write(key: "device_id", value: deviceId);
 
-      final fcmToken = await FirebaseMessaging.instance.getToken();
+      String? fcmToken;
+
+      if (!kIsWeb) {
+        fcmToken = await FirebaseMessaging.instance.getToken();
+      }
 
       debugPrint("🔥 LOGIN FCM TOKEN: $fcmToken");
 
@@ -387,7 +420,7 @@ class _LoginPageState extends State<LoginPage> {
 
     if (Theme.of(context).platform == TargetPlatform.android) {
       final android = await deviceInfo.androidInfo;
-      return android.id ?? android.model;
+      return android.id;
     } else {
       final ios = await deviceInfo.iosInfo;
       return ios.identifierForVendor ?? "unknown_ios";
@@ -916,7 +949,7 @@ class _LoginPageState extends State<LoginPage> {
                 ),
               )
             : DropdownButtonFormField<String>(
-                value: value,
+                initialValue: value,
                 isExpanded: true,
                 items: items
                     .map((e) => DropdownMenuItem(value: e, child: Text(e)))
@@ -1263,7 +1296,8 @@ class _LoginPageState extends State<LoginPage> {
                                               ),
                                             )
                                           : DropdownButtonFormField<String>(
-                                              value: fpSelectedDepartment,
+                                              initialValue:
+                                                  fpSelectedDepartment,
                                               isExpanded: true,
                                               items: fpDepartmentList
                                                   .where(
@@ -1564,11 +1598,17 @@ class _LoginPageState extends State<LoginPage> {
     AuthSession.name = data["user"]["name"]?.toString();
     AuthSession.role = data["user"]["role"];
     AuthSession.siteId = selectedSiteId;
+    AuthSession.siteName = selectedSite;
+    AuthSession.departmentName = selectedDepartment;
     AuthSession.departmentId = selectedDepartmentId;
     AuthSession.email = data["user"]?["email"]?.toString();
     AuthSession.employeeId = data["user"]?["employee_id"]?.toString();
     AuthSession.token = data["token"];
+
+    AuthSession.isManualLogout = false;
     AuthSession.markReady();
+
+    if (!mounted) return;
 
     if (mustChange) {
       Navigator.pushAndRemoveUntil(
@@ -1801,24 +1841,21 @@ class _LoginPageState extends State<LoginPage> {
                 setLocal(() => errorText = "Email wajib diisi.");
                 return;
               }
+
               if (!isValidEmail(email)) {
-                setLocal(
-                  () => errorText =
-                      "Format email tidak valid. Contoh: nama@domain.com",
-                );
+                setLocal(() {
+                  errorText =
+                      "Format email tidak valid. Contoh: nama@domain.com";
+                });
                 return;
               }
 
-              // ✅ aktifkan loading
               setLocal(() {
                 saving = true;
                 errorText = null;
               });
 
-              // ⚠️ Jangan dispose controller di sini.
-              // ✅ Tutup dialog dan kembalikan email.
-              // Delay 1 frame biar animasi/tap selesai rapi (opsional tapi bikin lebih halus)
-              await Future.delayed(const Duration(milliseconds: 60));
+              await Future.delayed(const Duration(milliseconds: 80));
 
               if (Navigator.of(ctx).canPop()) {
                 Navigator.of(ctx).pop(email);
@@ -1826,313 +1863,263 @@ class _LoginPageState extends State<LoginPage> {
             }
 
             return Dialog(
-              backgroundColor: Colors.transparent,
-              elevation: 0,
               insetPadding: const EdgeInsets.symmetric(
                 horizontal: 18,
-                vertical: 18,
+                vertical: 24,
               ),
-              child: Center(
-                child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 520),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(24),
+              ),
+              backgroundColor: Colors.white,
+              elevation: 0,
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 520),
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(24),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.10),
+                        blurRadius: 18,
+                        offset: const Offset(0, 8),
+                      ),
+                    ],
+                  ),
                   child: ClipRRect(
-                    borderRadius: BorderRadius.circular(28),
-                    child: Stack(
+                    borderRadius: BorderRadius.circular(24),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
                       children: [
-                        // ===== GLASS LAYER (BLUR) =====
-                        BackdropFilter(
-                          filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
-                          child: Container(
-                            decoration: BoxDecoration(
-                              borderRadius: BorderRadius.circular(28),
-                              color: Colors.white.withOpacity(0.18),
-                              border: Border.all(
-                                color: Colors.white.withOpacity(0.24),
-                              ),
-                            ),
-                          ),
-                        ),
-
-                        // ===== CARD CONTENT =====
+                        // HEADER
                         Container(
-                          decoration: BoxDecoration(
-                            borderRadius: BorderRadius.circular(28),
+                          width: double.infinity,
+                          padding: const EdgeInsets.fromLTRB(18, 16, 10, 16),
+                          decoration: const BoxDecoration(
                             gradient: LinearGradient(
-                              colors: [
-                                Colors.white.withOpacity(0.72),
-                                Colors.white.withOpacity(0.48),
-                              ],
+                              colors: [Color(0xff1d63ff), Color(0xff4fa9ff)],
                               begin: Alignment.topLeft,
                               end: Alignment.bottomRight,
                             ),
-                            boxShadow: const [
-                              BoxShadow(
-                                color: Colors.black12,
-                                blurRadius: 28,
-                                offset: Offset(0, 14),
+                          ),
+                          child: Row(
+                            children: [
+                              Container(
+                                width: 42,
+                                height: 42,
+                                decoration: BoxDecoration(
+                                  color: Colors.white.withOpacity(0.18),
+                                  borderRadius: BorderRadius.circular(14),
+                                  border: Border.all(color: Colors.white24),
+                                ),
+                                child: const Icon(
+                                  Icons.alternate_email_rounded,
+                                  color: Colors.white,
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              const Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      "Tambahkan Email",
+                                      style: TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 18,
+                                        fontWeight: FontWeight.w900,
+                                      ),
+                                    ),
+                                    SizedBox(height: 2),
+                                    Text(
+                                      "Dibutuhkan untuk OTP & fitur lupa password.",
+                                      style: TextStyle(
+                                        color: Colors.white70,
+                                        fontSize: 12.6,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              IconButton(
+                                onPressed: saving
+                                    ? null
+                                    : () => Navigator.of(ctx).pop(null),
+                                icon: const Icon(
+                                  Icons.close_rounded,
+                                  color: Colors.white,
+                                ),
                               ),
                             ],
                           ),
+                        ),
+
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(18, 16, 18, 18),
                           child: Column(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              // ===== HEADER =====
+                              // INFO BOX
                               Container(
                                 width: double.infinity,
-                                padding: const EdgeInsets.fromLTRB(
-                                  18,
-                                  16,
-                                  10,
-                                  16,
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 12,
+                                  vertical: 10,
                                 ),
                                 decoration: BoxDecoration(
-                                  gradient: LinearGradient(
-                                    colors: [
-                                      const Color(0xff1d63ff).withOpacity(0.95),
-                                      const Color(0xff4fa9ff).withOpacity(0.90),
-                                    ],
-                                    begin: Alignment.topLeft,
-                                    end: Alignment.bottomRight,
+                                  color: const Color(
+                                    0xff1d63ff,
+                                  ).withOpacity(0.06),
+                                  borderRadius: BorderRadius.circular(14),
+                                  border: Border.all(
+                                    color: const Color(
+                                      0xff1d63ff,
+                                    ).withOpacity(0.12),
                                   ),
                                 ),
-                                child: Row(
+                                child: const Row(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
-                                    Container(
-                                      width: 42,
-                                      height: 42,
-                                      decoration: BoxDecoration(
-                                        color: Colors.white.withOpacity(0.18),
-                                        borderRadius: BorderRadius.circular(14),
-                                        border: Border.all(
-                                          color: Colors.white24,
+                                    Icon(
+                                      Icons.info_outline_rounded,
+                                      size: 18,
+                                      color: Color(0xff1d63ff),
+                                    ),
+                                    SizedBox(width: 10),
+                                    Expanded(
+                                      child: Text(
+                                        "Masukkan email aktif yang bisa menerima OTP. Email ini akan digunakan untuk verifikasi login dan pemulihan akun.",
+                                        style: TextStyle(
+                                          fontSize: 12.7,
+                                          height: 1.35,
+                                          color: Colors.black54,
+                                          fontWeight: FontWeight.w700,
                                         ),
-                                      ),
-                                      child: const Icon(
-                                        Icons.alternate_email_rounded,
-                                        color: Colors.white,
-                                      ),
-                                    ),
-                                    const SizedBox(width: 12),
-                                    const Expanded(
-                                      child: Column(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
-                                        children: [
-                                          Text(
-                                            "Tambahkan Email",
-                                            style: TextStyle(
-                                              color: Colors.white,
-                                              fontSize: 18,
-                                              fontWeight: FontWeight.w900,
-                                            ),
-                                          ),
-                                          SizedBox(height: 2),
-                                          Text(
-                                            "Dibutuhkan untuk OTP & fitur lupa password.",
-                                            style: TextStyle(
-                                              color: Colors.white70,
-                                              fontSize: 12.6,
-                                              fontWeight: FontWeight.w600,
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                    IconButton(
-                                      onPressed: saving
-                                          ? null
-                                          : () => Navigator.of(ctx).pop(null),
-                                      icon: const Icon(
-                                        Icons.close_rounded,
-                                        color: Colors.white,
                                       ),
                                     ),
                                   ],
                                 ),
                               ),
 
-                              Padding(
-                                padding: const EdgeInsets.fromLTRB(
-                                  18,
-                                  16,
-                                  18,
-                                  18,
+                              const SizedBox(height: 14),
+
+                              // EMAIL FIELD
+                              Container(
+                                decoration: BoxDecoration(
+                                  color: const Color(0xfff6f8fb),
+                                  borderRadius: BorderRadius.circular(16),
+                                  border: Border.all(
+                                    color: Colors.black.withOpacity(0.06),
+                                  ),
                                 ),
-                                child: Column(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    // ===== CAPTION / INFO BOX =====
-                                    Container(
-                                      width: double.infinity,
-                                      padding: const EdgeInsets.symmetric(
-                                        horizontal: 12,
-                                        vertical: 10,
-                                      ),
-                                      decoration: BoxDecoration(
-                                        color: const Color(
-                                          0xff1d63ff,
-                                        ).withOpacity(0.08),
-                                        borderRadius: BorderRadius.circular(16),
-                                        border: Border.all(
-                                          color: const Color(
-                                            0xff1d63ff,
-                                          ).withOpacity(0.14),
-                                        ),
-                                      ),
-                                      child: const Row(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
-                                        children: [
-                                          Icon(
-                                            Icons.info_outline_rounded,
-                                            size: 18,
-                                            color: Color(0xff1d63ff),
-                                          ),
-                                          SizedBox(width: 10),
-                                          Expanded(
-                                            child: Text(
-                                              "Masukkan email aktif yang bisa menerima OTP. Kami akan gunakan untuk verifikasi login dan pemulihan akun.",
-                                              style: TextStyle(
-                                                fontSize: 12.7,
-                                                height: 1.35,
-                                                color: Colors.black54,
-                                                fontWeight: FontWeight.w700,
-                                              ),
-                                            ),
-                                          ),
-                                        ],
-                                      ),
+                                child: TextField(
+                                  controller: c,
+                                  keyboardType: TextInputType.emailAddress,
+                                  textInputAction: TextInputAction.done,
+                                  onChanged: (_) {
+                                    if (errorText != null) {
+                                      setLocal(() => errorText = null);
+                                    }
+                                  },
+                                  onSubmitted: (_) {
+                                    if (!saving) onSave();
+                                  },
+                                  decoration: InputDecoration(
+                                    hintText: "contoh: nama@domain.com",
+                                    labelText: "Alamat Email",
+                                    prefixIcon: const Icon(
+                                      Icons.email_outlined,
+                                      color: Color(0xff1d63ff),
                                     ),
+                                    filled: true,
+                                    fillColor: Colors.transparent,
+                                    border: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(16),
+                                      borderSide: BorderSide.none,
+                                    ),
+                                    contentPadding: const EdgeInsets.symmetric(
+                                      horizontal: 12,
+                                      vertical: 14,
+                                    ),
+                                    errorText: errorText,
+                                  ),
+                                ),
+                              ),
 
-                                    const SizedBox(height: 14),
+                              const SizedBox(height: 18),
 
-                                    // ===== EMAIL FIELD =====
-                                    Container(
-                                      decoration: BoxDecoration(
-                                        borderRadius: BorderRadius.circular(16),
-                                        color: Colors.white.withOpacity(0.60),
-                                        border: Border.all(
-                                          color: Colors.black12.withOpacity(
-                                            0.08,
+                              // BUTTONS
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: SizedBox(
+                                      height: 48,
+                                      child: OutlinedButton(
+                                        onPressed: saving
+                                            ? null
+                                            : () => Navigator.of(ctx).pop(null),
+                                        style: OutlinedButton.styleFrom(
+                                          side: BorderSide(
+                                            color: const Color(
+                                              0xff1d63ff,
+                                            ).withOpacity(0.28),
                                           ),
-                                        ),
-                                      ),
-                                      child: TextField(
-                                        controller: c,
-                                        keyboardType:
-                                            TextInputType.emailAddress,
-                                        textInputAction: TextInputAction.done,
-                                        onChanged: (_) {
-                                          if (errorText != null) {
-                                            setLocal(() => errorText = null);
-                                          }
-                                        },
-                                        onSubmitted: (_) {
-                                          if (!saving) onSave();
-                                        },
-                                        decoration: InputDecoration(
-                                          hintText: "contoh: nama@domain.com",
-                                          labelText: "Alamat Email",
-                                          prefixIcon: const Icon(
-                                            Icons.email_outlined,
-                                            color: Color(0xff1d63ff),
-                                          ),
-                                          filled: true,
-                                          fillColor: Colors.transparent,
-                                          border: OutlineInputBorder(
+                                          shape: RoundedRectangleBorder(
                                             borderRadius: BorderRadius.circular(
                                               16,
                                             ),
-                                            borderSide: BorderSide.none,
                                           ),
-                                          contentPadding:
-                                              const EdgeInsets.symmetric(
-                                                horizontal: 12,
-                                                vertical: 14,
-                                              ),
-                                          errorText:
-                                              errorText, // ✅ inline error
+                                        ),
+                                        child: const Text(
+                                          "BATAL",
+                                          style: TextStyle(
+                                            color: Color(0xff1d63ff),
+                                            fontWeight: FontWeight.w900,
+                                          ),
                                         ),
                                       ),
                                     ),
-
-                                    const SizedBox(height: 16),
-
-                                    // ===== BUTTONS =====
-                                    Row(
-                                      children: [
-                                        Expanded(
-                                          child: SizedBox(
-                                            height: 48,
-                                            child: OutlinedButton(
-                                              onPressed: saving
-                                                  ? null
-                                                  : () => Navigator.of(
-                                                      ctx,
-                                                    ).pop(null),
-                                              style: OutlinedButton.styleFrom(
-                                                side: BorderSide(
-                                                  color: const Color(
-                                                    0xff1d63ff,
-                                                  ).withOpacity(0.30),
-                                                ),
-                                                shape: RoundedRectangleBorder(
-                                                  borderRadius:
-                                                      BorderRadius.circular(16),
-                                                ),
-                                              ),
-                                              child: const Text(
-                                                "BATAL",
-                                                style: TextStyle(
-                                                  color: Color(0xff1d63ff),
-                                                  fontWeight: FontWeight.w900,
-                                                ),
-                                              ),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  Expanded(
+                                    child: SizedBox(
+                                      height: 48,
+                                      child: ElevatedButton(
+                                        onPressed: saving ? null : onSave,
+                                        style: ElevatedButton.styleFrom(
+                                          backgroundColor: const Color(
+                                            0xff1d63ff,
+                                          ),
+                                          shape: RoundedRectangleBorder(
+                                            borderRadius: BorderRadius.circular(
+                                              16,
                                             ),
                                           ),
+                                          elevation: 0,
                                         ),
-                                        const SizedBox(width: 12),
-                                        Expanded(
-                                          child: SizedBox(
-                                            height: 48,
-                                            child: ElevatedButton(
-                                              onPressed: saving ? null : onSave,
-                                              style: ElevatedButton.styleFrom(
-                                                backgroundColor: const Color(
-                                                  0xff1d63ff,
-                                                ),
-                                                shape: RoundedRectangleBorder(
-                                                  borderRadius:
-                                                      BorderRadius.circular(16),
-                                                ),
-                                                elevation: 0,
-                                              ),
-                                              child: saving
-                                                  ? const SizedBox(
-                                                      width: 22,
-                                                      height: 22,
-                                                      child:
-                                                          CircularProgressIndicator(
-                                                            strokeWidth: 2.5,
-                                                            color: Colors.white,
-                                                          ),
-                                                    )
-                                                  : const Text(
-                                                      "SIMPAN & LANJUT",
-                                                      style: TextStyle(
-                                                        color: Colors.white,
-                                                        fontWeight:
-                                                            FontWeight.w900,
-                                                        letterSpacing: 0.2,
-                                                      ),
+                                        child: saving
+                                            ? const SizedBox(
+                                                width: 22,
+                                                height: 22,
+                                                child:
+                                                    CircularProgressIndicator(
+                                                      strokeWidth: 2.5,
+                                                      color: Colors.white,
                                                     ),
-                                            ),
-                                          ),
-                                        ),
-                                      ],
+                                              )
+                                            : const Text(
+                                                "SIMPAN",
+                                                style: TextStyle(
+                                                  color: Colors.white,
+                                                  fontWeight: FontWeight.w900,
+                                                  letterSpacing: 0.2,
+                                                ),
+                                              ),
+                                      ),
                                     ),
-                                  ],
-                                ),
+                                  ),
+                                ],
                               ),
                             ],
                           ),
@@ -2148,7 +2135,6 @@ class _LoginPageState extends State<LoginPage> {
       },
     );
 
-    // ✅ dispose aman setelah dialog benar-benar selesai (menghindari "used after disposed")
     WidgetsBinding.instance.addPostFrameCallback((_) {
       c.dispose();
     });
@@ -2529,385 +2515,361 @@ class _LoginPageState extends State<LoginPage> {
             final canResend = cooldown == 0 && !sendingResend;
 
             return Dialog(
-              backgroundColor: Colors.transparent,
               insetPadding: const EdgeInsets.symmetric(
                 horizontal: 18,
                 vertical: 18,
               ),
+              backgroundColor: Colors.white,
               elevation: 0,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(24),
+              ),
               child: Center(
                 child: ConstrainedBox(
                   constraints: const BoxConstraints(maxWidth: 520),
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(28),
-                    child: Stack(
-                      children: [
-                        // ✅ blur glass
-                        BackdropFilter(
-                          filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
-                          child: Container(
-                            decoration: BoxDecoration(
-                              borderRadius: BorderRadius.circular(28),
-                              color: Colors.white.withOpacity(0.22),
-                              border: Border.all(
-                                color: Colors.white.withOpacity(0.25),
-                              ),
-                            ),
-                          ),
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(24),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withOpacity(0.10),
+                          blurRadius: 18,
+                          offset: const Offset(0, 8),
                         ),
-
-                        // ✅ konten card
-                        Container(
-                          decoration: BoxDecoration(
-                            borderRadius: BorderRadius.circular(28),
-                            gradient: LinearGradient(
-                              colors: [
-                                Colors.white.withOpacity(0.55),
-                                Colors.white.withOpacity(0.35),
-                              ],
-                              begin: Alignment.topLeft,
-                              end: Alignment.bottomRight,
-                            ),
-                            boxShadow: const [
-                              BoxShadow(
-                                color: Colors.black12,
-                                blurRadius: 28,
-                                offset: Offset(0, 14),
+                      ],
+                    ),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(24),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          // header
+                          Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.fromLTRB(18, 16, 10, 16),
+                            decoration: const BoxDecoration(
+                              gradient: LinearGradient(
+                                colors: [Color(0xff1d63ff), Color(0xff4fa9ff)],
+                                begin: Alignment.topLeft,
+                                end: Alignment.bottomRight,
                               ),
-                            ],
-                          ),
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              // header
-                              Container(
-                                width: double.infinity,
-                                padding: const EdgeInsets.fromLTRB(
-                                  18,
-                                  16,
-                                  10,
-                                  16,
-                                ),
-                                decoration: BoxDecoration(
-                                  gradient: LinearGradient(
-                                    colors: [
-                                      const Color(0xff1d63ff).withOpacity(0.95),
-                                      const Color(0xff4fa9ff).withOpacity(0.90),
-                                    ],
-                                    begin: Alignment.topLeft,
-                                    end: Alignment.bottomRight,
+                            ),
+                            child: Row(
+                              children: [
+                                Container(
+                                  width: 42,
+                                  height: 42,
+                                  decoration: BoxDecoration(
+                                    color: Colors.white.withOpacity(0.18),
+                                    borderRadius: BorderRadius.circular(14),
+                                    border: Border.all(color: Colors.white24),
+                                  ),
+                                  child: const Icon(
+                                    Icons.lock_rounded,
+                                    color: Colors.white,
                                   ),
                                 ),
-                                child: Row(
-                                  children: [
-                                    Container(
-                                      width: 42,
-                                      height: 42,
-                                      decoration: BoxDecoration(
-                                        color: Colors.white.withOpacity(0.18),
-                                        borderRadius: BorderRadius.circular(14),
-                                        border: Border.all(
-                                          color: Colors.white24,
+                                const SizedBox(width: 12),
+                                const Expanded(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        "Masukkan OTP",
+                                        style: TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 18,
+                                          fontWeight: FontWeight.w900,
                                         ),
                                       ),
-                                      child: const Icon(
-                                        Icons.lock_rounded,
-                                        color: Colors.white,
+                                      SizedBox(height: 2),
+                                      Text(
+                                        "Kode 6 digit sudah dikirim ke email Anda.",
+                                        style: TextStyle(
+                                          color: Colors.white70,
+                                          fontSize: 12.5,
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                IconButton(
+                                  onPressed: () => Navigator.of(ctx).pop(null),
+                                  icon: const Icon(
+                                    Icons.close_rounded,
+                                    color: Colors.white,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+
+                          Padding(
+                            padding: const EdgeInsets.fromLTRB(18, 16, 18, 18),
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                // caption/info
+                                Container(
+                                  width: double.infinity,
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 12,
+                                    vertical: 10,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: const Color(
+                                      0xff1d63ff,
+                                    ).withOpacity(0.06),
+                                    borderRadius: BorderRadius.circular(14),
+                                    border: Border.all(
+                                      color: const Color(
+                                        0xff1d63ff,
+                                      ).withOpacity(0.12),
+                                    ),
+                                  ),
+                                  child: const Row(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Icon(
+                                        Icons.info_outline_rounded,
+                                        size: 18,
+                                        color: Color(0xff1d63ff),
+                                      ),
+                                      SizedBox(width: 10),
+                                      Expanded(
+                                        child: Text(
+                                          "Cek inbox/spam. OTP berlaku beberapa menit. Jika belum masuk, kirim ulang OTP.",
+                                          style: TextStyle(
+                                            fontSize: 12.6,
+                                            height: 1.35,
+                                            color: Colors.black54,
+                                            fontWeight: FontWeight.w700,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+
+                                const SizedBox(height: 16),
+
+                                // OTP boxes
+                                Row(
+                                  mainAxisAlignment:
+                                      MainAxisAlignment.spaceBetween,
+                                  children: List.generate(6, (i) {
+                                    return SizedBox(
+                                      width: 44,
+                                      child: Container(
+                                        decoration: BoxDecoration(
+                                          color: const Color(0xfff6f8fb),
+                                          borderRadius: BorderRadius.circular(
+                                            14,
+                                          ),
+                                          border: Border.all(
+                                            color: Colors.black.withOpacity(
+                                              0.06,
+                                            ),
+                                          ),
+                                        ),
+                                        child: TextField(
+                                          controller: controllers[i],
+                                          focusNode: nodes[i],
+                                          keyboardType: TextInputType.number,
+                                          textAlign: TextAlign.center,
+                                          maxLength: 1,
+                                          inputFormatters: [
+                                            FilteringTextInputFormatter
+                                                .digitsOnly,
+                                          ],
+                                          decoration: InputDecoration(
+                                            counterText: "",
+                                            filled: true,
+                                            fillColor: Colors.transparent,
+                                            border: OutlineInputBorder(
+                                              borderRadius:
+                                                  BorderRadius.circular(14),
+                                              borderSide: BorderSide.none,
+                                            ),
+                                            enabledBorder: OutlineInputBorder(
+                                              borderRadius:
+                                                  BorderRadius.circular(14),
+                                              borderSide: BorderSide(
+                                                color: Colors.black.withOpacity(
+                                                  0.04,
+                                                ),
+                                              ),
+                                            ),
+                                            focusedBorder: OutlineInputBorder(
+                                              borderRadius:
+                                                  BorderRadius.circular(14),
+                                              borderSide: const BorderSide(
+                                                color: Color(0xff1d63ff),
+                                                width: 1.6,
+                                              ),
+                                            ),
+                                            contentPadding:
+                                                const EdgeInsets.symmetric(
+                                                  horizontal: 6,
+                                                  vertical: 14,
+                                                ),
+                                          ),
+                                          style: const TextStyle(
+                                            fontSize: 18,
+                                            fontWeight: FontWeight.w800,
+                                            color: Colors.black87,
+                                          ),
+                                          onChanged: (v) {
+                                            if (v.isNotEmpty) {
+                                              if (i < 5) {
+                                                FocusScope.of(
+                                                  ctx,
+                                                ).requestFocus(nodes[i + 1]);
+                                              } else {
+                                                FocusScope.of(ctx).unfocus();
+                                              }
+                                            } else {
+                                              if (i > 0) {
+                                                FocusScope.of(
+                                                  ctx,
+                                                ).requestFocus(nodes[i - 1]);
+                                              }
+                                            }
+                                          },
+                                        ),
+                                      ),
+                                    );
+                                  }),
+                                ),
+
+                                const SizedBox(height: 14),
+
+                                // resend row
+                                Row(
+                                  children: [
+                                    Expanded(
+                                      child: Align(
+                                        alignment: Alignment.centerLeft,
+                                        child: Text(
+                                          cooldown > 0
+                                              ? "Kirim ulang dalam ${cooldown}s"
+                                              : "Tidak menerima kode?",
+                                          style: TextStyle(
+                                            fontSize: 12.8,
+                                            color: Colors.black.withOpacity(
+                                              0.55,
+                                            ),
+                                            fontWeight: FontWeight.w700,
+                                          ),
+                                        ),
                                       ),
                                     ),
-                                    const SizedBox(width: 12),
-                                    const Expanded(
-                                      child: Column(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
-                                        children: [
-                                          Text(
-                                            "Masukkan OTP",
+                                    TextButton(
+                                      onPressed: canResend
+                                          ? () => resendOtp(setLocal, ctx)
+                                          : null,
+                                      child: sendingResend
+                                          ? const SizedBox(
+                                              width: 16,
+                                              height: 16,
+                                              child: CircularProgressIndicator(
+                                                strokeWidth: 2,
+                                              ),
+                                            )
+                                          : Text(
+                                              "KIRIM ULANG",
+                                              style: TextStyle(
+                                                fontWeight: FontWeight.w900,
+                                                letterSpacing: 0.2,
+                                                color: canResend
+                                                    ? const Color(0xff1d63ff)
+                                                    : Colors.black26,
+                                              ),
+                                            ),
+                                    ),
+                                  ],
+                                ),
+
+                                const SizedBox(height: 8),
+
+                                // buttons
+                                Row(
+                                  children: [
+                                    Expanded(
+                                      child: SizedBox(
+                                        height: 46,
+                                        child: OutlinedButton(
+                                          onPressed: () =>
+                                              Navigator.of(ctx).pop(null),
+                                          style: OutlinedButton.styleFrom(
+                                            side: BorderSide(
+                                              color: const Color(
+                                                0xff1d63ff,
+                                              ).withOpacity(0.30),
+                                            ),
+                                            shape: RoundedRectangleBorder(
+                                              borderRadius:
+                                                  BorderRadius.circular(16),
+                                            ),
+                                          ),
+                                          child: const Text(
+                                            "BATAL",
                                             style: TextStyle(
-                                              color: Colors.white,
-                                              fontSize: 18,
+                                              color: Color(0xff1d63ff),
                                               fontWeight: FontWeight.w900,
                                             ),
                                           ),
-                                          SizedBox(height: 2),
-                                          Text(
-                                            "Kode 6 digit sudah dikirim ke email Anda.",
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 12),
+                                    Expanded(
+                                      child: SizedBox(
+                                        height: 46,
+                                        child: ElevatedButton(
+                                          onPressed: () {
+                                            final otp = joinOtp();
+                                            if (otp.length != 6) {
+                                              _snack(
+                                                context,
+                                                "OTP harus 6 digit",
+                                              );
+                                              return;
+                                            }
+                                            Navigator.of(ctx).pop(otp);
+                                          },
+                                          style: ElevatedButton.styleFrom(
+                                            backgroundColor: const Color(
+                                              0xff1d63ff,
+                                            ),
+                                            shape: RoundedRectangleBorder(
+                                              borderRadius:
+                                                  BorderRadius.circular(16),
+                                            ),
+                                            elevation: 0,
+                                          ),
+                                          child: const Text(
+                                            "VERIFIKASI",
                                             style: TextStyle(
-                                              color: Colors.white70,
-                                              fontSize: 12.5,
-                                              fontWeight: FontWeight.w600,
+                                              color: Colors.white,
+                                              fontWeight: FontWeight.w900,
+                                              letterSpacing: 0.2,
                                             ),
                                           ),
-                                        ],
-                                      ),
-                                    ),
-                                    IconButton(
-                                      onPressed: () =>
-                                          Navigator.of(ctx).pop(null),
-                                      icon: const Icon(
-                                        Icons.close_rounded,
-                                        color: Colors.white,
+                                        ),
                                       ),
                                     ),
                                   ],
                                 ),
-                              ),
-
-                              Padding(
-                                padding: const EdgeInsets.fromLTRB(
-                                  18,
-                                  16,
-                                  18,
-                                  18,
-                                ),
-                                child: Column(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    // caption/info
-                                    Container(
-                                      width: double.infinity,
-                                      padding: const EdgeInsets.symmetric(
-                                        horizontal: 12,
-                                        vertical: 10,
-                                      ),
-                                      decoration: BoxDecoration(
-                                        color: const Color(
-                                          0xff1d63ff,
-                                        ).withOpacity(0.08),
-                                        borderRadius: BorderRadius.circular(16),
-                                        border: Border.all(
-                                          color: const Color(
-                                            0xff1d63ff,
-                                          ).withOpacity(0.14),
-                                        ),
-                                      ),
-                                      child: const Row(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
-                                        children: [
-                                          Icon(
-                                            Icons.info_outline_rounded,
-                                            size: 18,
-                                            color: Color(0xff1d63ff),
-                                          ),
-                                          SizedBox(width: 10),
-                                          Expanded(
-                                            child: Text(
-                                              "Cek inbox/spam. OTP berlaku beberapa menit. Jika belum masuk, kirim ulang OTP.",
-                                              style: TextStyle(
-                                                fontSize: 12.6,
-                                                height: 1.35,
-                                                color: Colors.black54,
-                                                fontWeight: FontWeight.w700,
-                                              ),
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-
-                                    const SizedBox(height: 14),
-
-                                    // OTP boxes
-                                    Row(
-                                      mainAxisAlignment:
-                                          MainAxisAlignment.spaceBetween,
-                                      children: List.generate(6, (i) {
-                                        return SizedBox(
-                                          width: 44,
-                                          child: TextField(
-                                            controller: controllers[i],
-                                            focusNode: nodes[i],
-                                            keyboardType: TextInputType.number,
-                                            textAlign: TextAlign.center,
-                                            maxLength: 1,
-                                            inputFormatters: [
-                                              FilteringTextInputFormatter
-                                                  .digitsOnly,
-                                            ],
-                                            decoration: InputDecoration(
-                                              counterText: "",
-                                              filled: true,
-                                              fillColor: Colors.white
-                                                  .withOpacity(0.65),
-                                              border: OutlineInputBorder(
-                                                borderRadius:
-                                                    BorderRadius.circular(14),
-                                                borderSide: BorderSide.none,
-                                              ),
-                                              enabledBorder: OutlineInputBorder(
-                                                borderRadius:
-                                                    BorderRadius.circular(14),
-                                                borderSide: BorderSide(
-                                                  color: Colors.black12
-                                                      .withOpacity(0.08),
-                                                ),
-                                              ),
-                                              focusedBorder: OutlineInputBorder(
-                                                borderRadius:
-                                                    BorderRadius.circular(14),
-                                                borderSide: const BorderSide(
-                                                  color: Color(0xff1d63ff),
-                                                  width: 1.6,
-                                                ),
-                                              ),
-                                              contentPadding:
-                                                  const EdgeInsets.symmetric(
-                                                    horizontal: 6,
-                                                    vertical: 14,
-                                                  ),
-                                            ),
-                                            onChanged: (v) {
-                                              if (v.isNotEmpty) {
-                                                if (i < 5) {
-                                                  FocusScope.of(
-                                                    ctx,
-                                                  ).requestFocus(nodes[i + 1]);
-                                                } else {
-                                                  FocusScope.of(ctx).unfocus();
-                                                }
-                                              } else {
-                                                if (i > 0) {
-                                                  FocusScope.of(
-                                                    ctx,
-                                                  ).requestFocus(nodes[i - 1]);
-                                                }
-                                              }
-                                            },
-                                          ),
-                                        );
-                                      }),
-                                    ),
-
-                                    const SizedBox(height: 14),
-
-                                    // resend row
-                                    Row(
-                                      children: [
-                                        Expanded(
-                                          child: Align(
-                                            alignment: Alignment.centerLeft,
-                                            child: Text(
-                                              cooldown > 0
-                                                  ? "Kirim ulang dalam ${cooldown}s"
-                                                  : "Tidak menerima kode?",
-                                              style: TextStyle(
-                                                fontSize: 12.8,
-                                                color: Colors.black.withOpacity(
-                                                  0.55,
-                                                ),
-                                                fontWeight: FontWeight.w700,
-                                              ),
-                                            ),
-                                          ),
-                                        ),
-                                        TextButton(
-                                          onPressed: canResend
-                                              ? () => resendOtp(setLocal, ctx)
-                                              : null,
-                                          child: sendingResend
-                                              ? const SizedBox(
-                                                  width: 16,
-                                                  height: 16,
-                                                  child:
-                                                      CircularProgressIndicator(
-                                                        strokeWidth: 2,
-                                                      ),
-                                                )
-                                              : Text(
-                                                  "KIRIM ULANG",
-                                                  style: TextStyle(
-                                                    fontWeight: FontWeight.w900,
-                                                    letterSpacing: 0.2,
-                                                    color: canResend
-                                                        ? const Color(
-                                                            0xff1d63ff,
-                                                          )
-                                                        : Colors.black26,
-                                                  ),
-                                                ),
-                                        ),
-                                      ],
-                                    ),
-
-                                    const SizedBox(height: 8),
-
-                                    // buttons
-                                    Row(
-                                      children: [
-                                        Expanded(
-                                          child: SizedBox(
-                                            height: 46,
-                                            child: OutlinedButton(
-                                              onPressed: () =>
-                                                  Navigator.of(ctx).pop(null),
-                                              style: OutlinedButton.styleFrom(
-                                                side: BorderSide(
-                                                  color: const Color(
-                                                    0xff1d63ff,
-                                                  ).withOpacity(0.30),
-                                                ),
-                                                shape: RoundedRectangleBorder(
-                                                  borderRadius:
-                                                      BorderRadius.circular(16),
-                                                ),
-                                              ),
-                                              child: const Text(
-                                                "BATAL",
-                                                style: TextStyle(
-                                                  color: Color(0xff1d63ff),
-                                                  fontWeight: FontWeight.w900,
-                                                ),
-                                              ),
-                                            ),
-                                          ),
-                                        ),
-                                        const SizedBox(width: 12),
-                                        Expanded(
-                                          child: SizedBox(
-                                            height: 46,
-                                            child: ElevatedButton(
-                                              onPressed: () {
-                                                final otp = joinOtp();
-                                                if (otp.length != 6) {
-                                                  _snack(
-                                                    context,
-                                                    "OTP harus 6 digit",
-                                                  );
-                                                  return;
-                                                }
-                                                Navigator.of(ctx).pop(otp);
-                                              },
-                                              style: ElevatedButton.styleFrom(
-                                                backgroundColor: const Color(
-                                                  0xff1d63ff,
-                                                ),
-                                                shape: RoundedRectangleBorder(
-                                                  borderRadius:
-                                                      BorderRadius.circular(16),
-                                                ),
-                                                elevation: 0,
-                                              ),
-                                              child: const Text(
-                                                "VERIFIKASI",
-                                                style: TextStyle(
-                                                  color: Colors.white,
-                                                  fontWeight: FontWeight.w900,
-                                                  letterSpacing: 0.2,
-                                                ),
-                                              ),
-                                            ),
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ],
+                              ],
+                            ),
                           ),
-                        ),
-                      ],
+                        ],
+                      ),
                     ),
                   ),
                 ),

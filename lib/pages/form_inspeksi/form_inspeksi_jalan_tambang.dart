@@ -1,19 +1,25 @@
-import 'dart:io';
+import 'dart:typed_data';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:safety_apps/models/dropdown_item.dart';
+import 'package:safety_apps/service/pending/pending_form_helper.dart';
+import 'package:safety_apps/service/pending/retry_submit_helper.dart';
 import 'package:safety_apps/session/auth_session.dart';
 
 import 'package:safety_apps/widgets/dropdown/dropdown_yesnona.dart';
 import 'package:safety_apps/widgets/opsi/opsi_row.dart';
 import 'package:safety_apps/widgets/opsi/opsi_row3.dart';
+import 'package:safety_apps/widgets/result/status_pending_dialog.dart';
+import 'package:safety_apps/widgets/search_dropdown.dart';
+import 'package:safety_apps/widgets/submit_loading_dialog.dart';
+import 'package:safety_apps/widgets/validation_error_dialog.dart';
 import '../../service/inspeksi/inspeksi_jalan_tambang_service.dart';
 import '../../widgets/label_text.dart';
 import '../../widgets/input/input_field.dart';
 import '../../widgets/date_field.dart';
 import '../../widgets/upload_box.dart';
-import '../../widgets/dropdown/dropdown_department.dart';
-import '../../widgets/dropdown/dropdown_perusahaan.dart';
 
 class FormInspeksiJalanTambang extends StatefulWidget {
   @override
@@ -30,9 +36,26 @@ class _FormInspeksiJalanTambangPageState
   TextEditingController ket_hasil_temuan = TextEditingController();
   TextEditingController saran_masuk = TextEditingController();
 
-  String? department;
+  @override
+  void dispose() {
+    nama.dispose();
+    nrp.dispose();
+    jumlah_inspektor.dispose();
+    tanggal.dispose();
+    ket_hasil_temuan.dispose();
+    saran_masuk.dispose();
+    _submitProgressText.dispose();
+    super.dispose();
+  }
+
+  DropdownItemModel? selectedDepartment;
+  DropdownItemModel? selectedPerusahaan;
+
+  String? departmentManual;
+  String? perusahaanManual;
+
   String? status_inspeksi;
-  String? perusahaan;
+
   String? apar;
 
   String? opsi1;
@@ -58,7 +81,22 @@ class _FormInspeksiJalanTambangPageState
   String? opsi21;
   String? opsi22;
 
+  XFile? foto1;
+  XFile? foto2;
+  XFile? foto3;
+
+  Uint8List? foto1Bytes;
+  Uint8List? foto2Bytes;
+  Uint8List? foto3Bytes;
+
   bool _isSubmitting = false;
+
+  static const int _maxAutoRetry = 3;
+  static const Duration _submitTimeout = Duration(seconds: 15);
+  static const Duration _retryDelay = Duration(seconds: 1);
+  final ValueNotifier<String> _submitProgressText = ValueNotifier(
+    "Mengirim data Inspeksi...",
+  );
 
   static const fNama = "Nama Pengisi";
   static const fNRP = "NRP";
@@ -105,8 +143,19 @@ class _FormInspeksiJalanTambangPageState
 
     if (nama.text.trim().isEmpty) missing.add(fNama);
     if (nrp.text.trim().isEmpty) missing.add(fNRP);
-    if (department == null || department!.isEmpty) missing.add(fDepartment);
-    if (perusahaan == null || perusahaan!.isEmpty) missing.add(fPerusahaan);
+    if (selectedDepartment == null) {
+      missing.add(fDepartment);
+    } else if (selectedDepartment!.isOther &&
+        (departmentManual == null || departmentManual!.trim().isEmpty)) {
+      missing.add(fDepartment);
+    }
+
+    if (selectedPerusahaan == null) {
+      missing.add(fPerusahaan);
+    } else if (selectedPerusahaan!.isOther &&
+        (perusahaanManual == null || perusahaanManual!.trim().isEmpty)) {
+      missing.add(fPerusahaan);
+    }
     if (tanggal.text.trim().isEmpty) missing.add(fTanggal);
     if (jumlah_inspektor.text.trim().isEmpty) {
       missing.add(fJumlahInspektor);
@@ -187,9 +236,117 @@ class _FormInspeksiJalanTambangPageState
     });
   }
 
-  File? foto1;
-  File? foto2;
-  File? foto3;
+  Map<String, dynamic> _buildInspeksiJalanTambangPayload() {
+    return {
+      'nama': nama.text,
+      'nrp': nrp.text,
+      'department': selectedDepartment?.isOther == true
+          ? (departmentManual ?? "")
+          : (selectedDepartment?.label ?? ""),
+      'perusahaan': selectedPerusahaan?.isOther == true
+          ? (perusahaanManual ?? "")
+          : (selectedPerusahaan?.label ?? ""),
+      'tanggal': tanggal.text,
+      'jumlahInspektor': jumlah_inspektor.text,
+
+      'opsi1': opsi1 ?? "",
+      'opsi2': opsi2 ?? "",
+      'opsi3': opsi3 ?? "",
+      'opsi4': opsi4 ?? "",
+      'opsi5': opsi5 ?? "",
+      'opsi6': opsi6 ?? "",
+      'opsi7': opsi7 ?? "",
+      'opsi8': opsi8 ?? "",
+      'opsi9': opsi9 ?? "",
+      'opsi10': opsi10 ?? "",
+      'opsi11': opsi11 ?? "",
+      'opsi12': opsi12 ?? "",
+      'opsi13': opsi13 ?? "",
+      'opsi14': opsi14 ?? "",
+      'opsi15': opsi15 ?? "",
+      'opsi16': opsi16 ?? "",
+      'opsi17': opsi17 ?? "",
+      'opsi18': opsi18 ?? "",
+      'opsi19': opsi19 ?? "",
+      'opsi20': opsi20 ?? "",
+      'opsi21': opsi21 ?? "",
+      'opsi22': opsi22 ?? "",
+
+      'ketHasil': ket_hasil_temuan.text,
+      'saranMasuk': saran_masuk.text,
+      'statusInspeksi': status_inspeksi ?? "",
+      'apar': apar ?? "",
+    };
+  }
+
+  List<String> _buildInspeksiJalanTambangFilePaths() {
+    if (kIsWeb) return [];
+
+    return [
+      if (foto1 != null && foto1!.path.isNotEmpty) foto1!.path,
+      if (foto2 != null && foto2!.path.isNotEmpty) foto2!.path,
+      if (foto3 != null && foto3!.path.isNotEmpty) foto3!.path,
+    ];
+  }
+
+  Future<bool> _submitInspeksiJalanTambangOnce(
+    Map<String, dynamic> payload,
+  ) async {
+    return await InspeksiJalanTambangService.submitInspeksiJalanTambang(
+      nama: (payload['nama'] ?? '').toString().trim(),
+      nrp: (payload['nrp'] ?? '').toString().trim(),
+      department: (payload['department'] ?? '').toString().trim(),
+      perusahaan: (payload['perusahaan'] ?? '').toString().trim(),
+      tanggal: (payload['tanggal'] ?? '').toString().trim(),
+      jumlahInspektor: (payload['jumlahInspektor'] ?? '').toString().trim(),
+
+      opsi1: (payload['opsi1'] ?? '').toString().trim(),
+      opsi2: (payload['opsi2'] ?? '').toString().trim(),
+      opsi3: (payload['opsi3'] ?? '').toString().trim(),
+      opsi4: (payload['opsi4'] ?? '').toString().trim(),
+      opsi5: (payload['opsi5'] ?? '').toString().trim(),
+      opsi6: (payload['opsi6'] ?? '').toString().trim(),
+      opsi7: (payload['opsi7'] ?? '').toString().trim(),
+      opsi8: (payload['opsi8'] ?? '').toString().trim(),
+      opsi9: (payload['opsi9'] ?? '').toString().trim(),
+      opsi10: (payload['opsi10'] ?? '').toString().trim(),
+      opsi11: (payload['opsi11'] ?? '').toString().trim(),
+      opsi12: (payload['opsi12'] ?? '').toString().trim(),
+      opsi13: (payload['opsi13'] ?? '').toString().trim(),
+      opsi14: (payload['opsi14'] ?? '').toString().trim(),
+      opsi15: (payload['opsi15'] ?? '').toString().trim(),
+      opsi16: (payload['opsi16'] ?? '').toString().trim(),
+      opsi17: (payload['opsi17'] ?? '').toString().trim(),
+      opsi18: (payload['opsi18'] ?? '').toString().trim(),
+      opsi19: (payload['opsi19'] ?? '').toString().trim(),
+      opsi20: (payload['opsi20'] ?? '').toString().trim(),
+      opsi21: (payload['opsi21'] ?? '').toString().trim(),
+      opsi22: (payload['opsi22'] ?? '').toString().trim(),
+
+      ketHasil: (payload['ketHasil'] ?? '').toString().trim(),
+      saranMasuk: (payload['saranMasuk'] ?? '').toString().trim(),
+      statusInspeksi: (payload['statusInspeksi'] ?? '').toString().trim(),
+      apar: (payload['apar'] ?? '').toString().trim(),
+
+      foto1Path: kIsWeb ? null : foto1?.path,
+      foto2Path: kIsWeb ? null : foto2?.path,
+      foto3Path: kIsWeb ? null : foto3?.path,
+
+      foto1Bytes: kIsWeb ? foto1Bytes : null,
+      foto2Bytes: kIsWeb ? foto2Bytes : null,
+      foto3Bytes: kIsWeb ? foto3Bytes : null,
+
+      foto1Name: foto1?.name,
+      foto2Name: foto2?.name,
+      foto3Name: foto3?.name,
+    ).timeout(
+      _submitTimeout,
+      onTimeout: () {
+        debugPrint("SUBMIT INSPEKSI JALAN TAMBANG TIMEOUT");
+        return false;
+      },
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -296,27 +453,33 @@ class _FormInspeksiJalanTambangPageState
                     readOnly: true,
                   ),
 
-                  LabelText(
-                    fDepartment,
+                  SearchableMasterDropdown(
+                    label: fDepartment,
+                    hint: "Pilih Department",
+                    endpoint: "master/department",
+                    selectedValue: selectedDepartment,
                     showError: _missingFields.contains(fDepartment),
-                  ),
-                  DropdownDepartment(
-                    value: department,
-                    onChanged: (v) {
-                      setState(() => department = v);
-                      if (v != null) _clearMissing(fDepartment);
+                    onChanged: (selected, manualValue) {
+                      setState(() {
+                        selectedDepartment = selected;
+                        departmentManual = manualValue;
+                      });
+                      _clearMissing(fDepartment);
                     },
                   ),
 
-                  LabelText(
-                    fPerusahaan,
+                  SearchableMasterDropdown(
+                    label: fPerusahaan,
+                    hint: "Pilih Perusahaan",
+                    endpoint: "master/perusahaan",
+                    selectedValue: selectedPerusahaan,
                     showError: _missingFields.contains(fPerusahaan),
-                  ),
-                  DropdownPerusahaan(
-                    value: perusahaan,
-                    onChanged: (v) {
-                      setState(() => perusahaan = v);
-                      if (v != null) _clearMissing(fPerusahaan);
+                    onChanged: (selected, manualValue) {
+                      setState(() {
+                        selectedPerusahaan = selected;
+                        perusahaanManual = manualValue;
+                      });
+                      _clearMissing(fPerusahaan);
                     },
                   ),
 
@@ -662,7 +825,7 @@ class _FormInspeksiJalanTambangPageState
 
   Widget uploadBox(
     String title,
-    File? foto,
+    XFile? foto,
     String fieldKey,
     VoidCallback onTap,
   ) {
@@ -671,7 +834,7 @@ class _FormInspeksiJalanTambangPageState
       children: [
         LabelText(title, showError: _missingFields.contains(fieldKey)),
         UploadBox(
-          text: foto == null ? "Pilih Foto" : foto.path.split("/").last,
+          text: foto == null ? "Pilih Foto" : foto.name,
           icon: Icons.photo,
           onTap: onTap,
         ),
@@ -701,17 +864,28 @@ class _FormInspeksiJalanTambangPageState
     XFile? img = await picker.pickImage(source: ImageSource.gallery);
 
     if (img != null) {
+      Uint8List? bytes;
+
+      if (kIsWeb) {
+        bytes = await img.readAsBytes();
+      }
+
       setState(() {
         if (index == 1) {
-          foto1 = File(img.path);
+          foto1 = img;
+          foto1Bytes = bytes;
           _clearMissing(fFoto1);
         }
+
         if (index == 2) {
-          foto2 = File(img.path);
+          foto2 = img;
+          foto2Bytes = bytes;
           _clearMissing(fFoto2);
         }
+
         if (index == 3) {
-          foto3 = File(img.path);
+          foto3 = img;
+          foto3Bytes = bytes;
           _clearMissing(fFoto3);
         }
       });
@@ -728,130 +902,10 @@ class _FormInspeksiJalanTambangPageState
     });
 
     if (missing.isNotEmpty) {
-      showDialog(
+      await ValidationErrorDialog.show(
         context: context,
-        builder: (_) => Dialog(
-          backgroundColor: Colors.transparent,
-          insetPadding: const EdgeInsets.symmetric(horizontal: 24),
-          child: Container(
-            padding: const EdgeInsets.all(22),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(22),
-              boxShadow: [
-                BoxShadow(
-                  blurRadius: 20,
-                  color: Colors.black.withOpacity(0.15),
-                  offset: const Offset(0, 6),
-                ),
-              ],
-            ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                // Header Gradient
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 14,
-                  ),
-                  decoration: BoxDecoration(
-                    gradient: const LinearGradient(
-                      colors: [Color(0xffFF5F6D), Color(0xffFF7A45)],
-                    ),
-                    borderRadius: BorderRadius.circular(14),
-                  ),
-                  child: Row(
-                    children: const [
-                      Icon(
-                        Icons.warning_amber_rounded,
-                        color: Colors.white,
-                        size: 26,
-                      ),
-                      SizedBox(width: 10),
-                      Expanded(
-                        child: Text(
-                          "Data Belum Lengkap",
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontWeight: FontWeight.bold,
-                            fontSize: 16,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-
-                const SizedBox(height: 18),
-
-                const Text(
-                  "Field berikut masih kosong:",
-                  style: TextStyle(
-                    fontWeight: FontWeight.w600,
-                    color: Colors.black87,
-                  ),
-                ),
-
-                const SizedBox(height: 10),
-
-                Container(
-                  constraints: const BoxConstraints(maxHeight: 200),
-                  child: SingleChildScrollView(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: missing
-                          .map(
-                            (e) => Padding(
-                              padding: const EdgeInsets.symmetric(vertical: 3),
-                              child: Row(
-                                children: [
-                                  const Icon(
-                                    Icons.circle,
-                                    size: 7,
-                                    color: Colors.redAccent,
-                                  ),
-                                  const SizedBox(width: 8),
-                                  Expanded(
-                                    child: Text(
-                                      e,
-                                      style: const TextStyle(fontSize: 14),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          )
-                          .toList(),
-                    ),
-                  ),
-                ),
-
-                const SizedBox(height: 20),
-
-                SizedBox(
-                  width: double.infinity,
-                  child: ElevatedButton(
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xffFF6A55),
-                      padding: const EdgeInsets.symmetric(vertical: 14),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                    ),
-                    onPressed: () => Navigator.pop(context),
-                    child: const Text(
-                      "Mengerti",
-                      style: TextStyle(color: Colors.white),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
+        missingFields: missing,
       );
-
       return;
     }
 
@@ -859,142 +913,90 @@ class _FormInspeksiJalanTambangPageState
       _isSubmitting = true;
     });
 
-    showDialog(
+    _submitProgressText.value = "Mengirim data Inspeksi...";
+
+    SubmitLoadingDialog.show(
       context: context,
-      barrierDismissible: false,
-      builder: (ctx) {
-        return Dialog(
-          backgroundColor: Colors.white,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(16),
-          ),
-          child: Padding(
-            padding: const EdgeInsets.all(20),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: const [
-                CircularProgressIndicator(),
-                SizedBox(width: 20),
-                Text("Mengirim data Inspeksi..."),
-              ],
-            ),
-          ),
-        );
-      },
+      messageNotifier: _submitProgressText,
     );
+
+    final payload = _buildInspeksiJalanTambangPayload();
+    final filePaths = _buildInspeksiJalanTambangFilePaths();
 
     bool ok = false;
+    bool savedToPending = false;
 
     try {
-      ok = await InspeksiJalanTambangService.submitInspeksiJalanTambang(
-        nama: nama.text,
-        nrp: nrp.text,
-        department: department ?? "",
-        perusahaan: perusahaan ?? "",
-        tanggal: tanggal.text,
-        jumlahInspektor: jumlah_inspektor.text,
+      ok = await RetrySubmitHelper.run(
+        maxRetry: _maxAutoRetry,
+        retryDelay: _retryDelay,
+        onProgress: (attempt, maxRetry) {
+          if (!mounted) return;
 
-        opsi1: opsi1 ?? "",
-        opsi2: opsi2 ?? "",
-        opsi3: opsi3 ?? "",
-        opsi4: opsi4 ?? "",
-        opsi5: opsi5 ?? "",
-        opsi6: opsi6 ?? "",
-        opsi7: opsi7 ?? "",
-        opsi8: opsi8 ?? "",
-        opsi9: opsi9 ?? "",
-        opsi10: opsi10 ?? "",
-        opsi11: opsi11 ?? "",
-        opsi12: opsi12 ?? "",
-        opsi13: opsi13 ?? "",
-        opsi14: opsi14 ?? "",
-        opsi15: opsi15 ?? "",
-        opsi16: opsi16 ?? "",
-        opsi17: opsi17 ?? "",
-        opsi18: opsi18 ?? "",
-        opsi19: opsi19 ?? "",
-        opsi20: opsi20 ?? "",
-        opsi21: opsi21 ?? "",
-        opsi22: opsi22 ?? "",
-
-        ketHasil: ket_hasil_temuan.text,
-        saranMasuk: saran_masuk.text,
-        statusInspeksi: status_inspeksi ?? "",
-        apar: apar ?? "",
-
-        foto1Path: foto1?.path,
-        foto2Path: foto2?.path,
-        foto3Path: foto3?.path,
+          _submitProgressText.value = attempt == 1
+              ? "Mengirim data Inspeksi..."
+              : "Mengirim ulang... percobaan $attempt dari $maxRetry";
+        },
+        action: () => _submitInspeksiJalanTambangOnce(payload),
       );
+
+      if (!ok) {
+        await PendingFormHelper.saveInspeksiJalanTambang(
+          payload: payload,
+          filePaths: filePaths,
+        );
+        savedToPending = true;
+      }
     } catch (_) {
-      ok = false;
+      await PendingFormHelper.saveInspeksiJalanTambang(
+        payload: payload,
+        filePaths: filePaths,
+      );
+      savedToPending = true;
     }
+
     if (!mounted) return;
 
-    setState(() => _isSubmitting = false);
-    Navigator.pop(context);
+    SubmitLoadingDialog.close(context);
 
-    showStatusDialog(
-      context: context,
-      success: ok,
-      onDone: () {
-        Navigator.pop(context);
+    setState(() {
+      _isSubmitting = false;
+    });
 
-        if (ok) {
+    _submitProgressText.value = "Mengirim data Inspeksi...";
+
+    if (ok) {
+      StatusDialog.show(
+        context: context,
+        type: StatusDialogType.success,
+        title: "Berhasil Terkirim",
+        message: "Data berhasil dikirim ke server.",
+        onDone: () {
           Navigator.pop(context);
-        }
-      },
-    );
+          Navigator.pop(context);
+        },
+      );
+    } else if (savedToPending) {
+      StatusDialog.show(
+        context: context,
+        type: StatusDialogType.warning,
+        title: "Tersimpan di Pending",
+        message:
+            "Pengiriman gagal setelah beberapa kali percobaan. Data disimpan di Pending Submission.",
+        onDone: () {
+          Navigator.pop(context);
+        },
+      );
+    } else {
+      StatusDialog.show(
+        context: context,
+        type: StatusDialogType.error,
+        title: "Gagal Terkirim",
+        message: "Data gagal dikirim.",
+        onDone: () {
+          Navigator.pop(context);
+        },
+      );
+    }
   }
-}
-
-void showStatusDialog({
-  required BuildContext context,
-  required bool success,
-  required VoidCallback onDone,
-}) {
-  showDialog(
-    context: context,
-    barrierDismissible: false,
-    builder: (_) => AlertDialog(
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-      contentPadding: const EdgeInsets.symmetric(vertical: 28),
-      content: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(
-            success ? Icons.check_circle_rounded : Icons.cancel_rounded,
-            size: 80,
-            color: success ? Colors.green : Colors.red,
-          ),
-          const SizedBox(height: 16),
-          Text(
-            success ? "Berhasil Terkirim" : "Gagal Terkirim",
-            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            success
-                ? "Data Inspeksi berhasil dikirim"
-                : "Data Inspeksi Belum Lengkap",
-            style: const TextStyle(color: Colors.black54),
-          ),
-          const SizedBox(height: 22),
-          SizedBox(
-            width: 120,
-            child: ElevatedButton(
-              style: ElevatedButton.styleFrom(
-                backgroundColor: success ? Colors.green : Colors.redAccent,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(14),
-                ),
-              ),
-              onPressed: onDone,
-              child: Text("OK", style: TextStyle(color: Colors.white)),
-            ),
-          ),
-        ],
-      ),
-    ),
-  );
 }

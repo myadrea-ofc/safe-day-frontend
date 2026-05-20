@@ -287,7 +287,10 @@ class _HSESDailyPlanPageState extends State<HSESDailyPlanPage> {
                             );
 
                             if (edited != null && mounted) {
-                              _loadData();
+                              await _loadData();
+
+                              if (!mounted) return;
+
                               showAutoInfoDialog(
                                 context,
                                 title: "Berhasil",
@@ -302,7 +305,10 @@ class _HSESDailyPlanPageState extends State<HSESDailyPlanPage> {
                               plan.id,
                             );
                             if (success && mounted) {
-                              _loadData();
+                              await _loadData();
+
+                              if (!mounted) return;
+
                               showAutoInfoDialog(
                                 context,
                                 title: "Berhasil",
@@ -341,7 +347,9 @@ class _HSESDailyPlanPageState extends State<HSESDailyPlanPage> {
                 );
 
                 if (result != null && mounted) {
-                  _loadData();
+                  await _loadData();
+
+                  if (!mounted) return;
 
                   showAutoInfoDialog(
                     context,

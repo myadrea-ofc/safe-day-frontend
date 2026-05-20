@@ -3,14 +3,12 @@ import 'package:safety_apps/pages/event/hses_buletin.dart';
 import 'package:safety_apps/pages/event/hses_daily_plant.dart';
 
 class HsesEventPage extends StatelessWidget {
-  const HsesEventPage({super.key});
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Color(0xffeef2f7),
+      backgroundColor: const Color(0xffeef2f7),
       appBar: AppBar(
-        iconTheme: IconThemeData(color: Colors.white),
+        iconTheme: const IconThemeData(color: Colors.white),
         toolbarHeight: 90,
         backgroundColor: Colors.transparent,
         elevation: 0,
@@ -24,11 +22,11 @@ class HsesEventPage extends StatelessWidget {
             ),
             borderRadius: BorderRadius.vertical(bottom: Radius.circular(30)),
           ),
-          child: SafeArea(
+          child: const SafeArea(
             child: Center(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
-                children: const [
+                children: [
                   Text(
                     "HSES EVENT",
                     style: TextStyle(
@@ -48,9 +46,8 @@ class HsesEventPage extends StatelessWidget {
           ),
         ),
       ),
-
       body: ListView(
-        padding: EdgeInsets.all(18),
+        padding: const EdgeInsets.fromLTRB(18, 22, 18, 24),
         children: [
           _menuCardPremium(
             context: context,
@@ -119,7 +116,6 @@ class HsesEventPage extends StatelessWidget {
             padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
             child: Row(
               children: [
-                // ICON (STYLE TETAP)
                 Container(
                   height: 52,
                   width: 52,
@@ -135,10 +131,7 @@ class HsesEventPage extends StatelessWidget {
                   ),
                   child: Icon(icon, color: Colors.white, size: 28),
                 ),
-
                 const SizedBox(width: 16),
-
-                // TITLE + BADGE
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -151,8 +144,6 @@ class HsesEventPage extends StatelessWidget {
                           color: enabled ? Colors.black : Colors.grey,
                         ),
                       ),
-
-                      // 🔖 BADGE COMING SOON
                       if (!enabled)
                         Container(
                           margin: const EdgeInsets.only(top: 6),
@@ -177,8 +168,6 @@ class HsesEventPage extends StatelessWidget {
                     ],
                   ),
                 ),
-
-                // RIGHT ICON
                 Icon(
                   enabled
                       ? Icons.arrow_forward_ios_rounded

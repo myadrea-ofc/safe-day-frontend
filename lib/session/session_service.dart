@@ -29,26 +29,28 @@ class SessionService {
   static Future<void> forceLogout(BuildContext context) async {
     FirebaseNotificationService.resetRoleDialogFlag();
 
-    final navContext = navigatorKey.currentState?.overlay?.context ?? context;
-
-    if (Navigator.of(navContext, rootNavigator: true).canPop()) {
-      Navigator.of(navContext, rootNavigator: true).pop();
-    }
-
     const storage = FlutterSecureStorage();
     final deviceId = await storage.read(key: "device_id");
+
     await storage.deleteAll();
+
     if (deviceId != null) {
       await storage.write(key: "device_id", value: deviceId);
     }
+
     AuthSession.clear();
 
-    if (navContext.mounted) {
-      Navigator.pushAndRemoveUntil(
-        navContext,
+    final navigator = navigatorKey.currentState;
+    if (navigator == null || !navigator.mounted) return;
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final nav = navigatorKey.currentState;
+      if (nav == null || !nav.mounted) return;
+
+      nav.pushAndRemoveUntil(
         MaterialPageRoute(builder: (_) => const LoginPage()),
-        (_) => false,
+        (route) => false,
       );
-    }
+    });
   }
 }

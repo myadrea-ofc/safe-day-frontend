@@ -3,7 +3,27 @@ import 'package:safety_apps/drawer/event/buletin_result.dart';
 import 'package:safety_apps/drawer/event/daily_plan_result.dart';
 
 class EventPage extends StatelessWidget {
-  const EventPage({super.key});
+  final bool canSeeDailyPlan;
+  final bool canSeeBuletin;
+  final bool canSeeTraining;
+  final String userRole;
+
+  const EventPage({
+    super.key,
+    this.canSeeDailyPlan = false,
+    this.canSeeBuletin = false,
+    this.canSeeTraining = false,
+    this.userRole = "",
+  });
+
+  bool get _isAdminOrSuperadmin {
+    final role = userRole.toLowerCase().trim();
+    return role == "admin" || role == "superadmin";
+  }
+
+  bool get _canShowDailyPlan => _isAdminOrSuperadmin || canSeeDailyPlan;
+  bool get _canShowBuletin => _isAdminOrSuperadmin || canSeeBuletin;
+  bool get _canShowTraining => _isAdminOrSuperadmin || canSeeTraining;
 
   @override
   Widget build(BuildContext context) {
@@ -52,37 +72,38 @@ class EventPage extends StatelessWidget {
       body: ListView(
         padding: EdgeInsets.all(18),
         children: [
-          _menuCardPremium(
-            context: context,
-            title: "HSES Daily Plan",
-            icon: Icons.calendar_month,
-            onTap: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => DailyPlanResultPage()),
-              );
-            },
-          ),
-
-          _menuCardPremium(
-            context: context,
-            title: "HSES Buletin",
-            icon: Icons.newspaper_rounded,
-            onTap: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => BuletinResultPage()),
-              );
-            },
-          ),
-
-          _menuCardPremium(
-            context: context,
-            title: "HSES Training",
-            icon: Icons.menu_book_rounded,
-            enabled: false,
-            onTap: () {},
-          ),
+          if (_canShowDailyPlan)
+            _menuCardPremium(
+              context: context,
+              title: "HSES Daily Plan",
+              icon: Icons.calendar_month,
+              onTap: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => DailyPlanResultPage()),
+                );
+              },
+            ),
+          if (_canShowBuletin)
+            _menuCardPremium(
+              context: context,
+              title: "HSES Buletin",
+              icon: Icons.newspaper_rounded,
+              onTap: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => BuletinResultPage()),
+                );
+              },
+            ),
+          if (_canShowTraining)
+            _menuCardPremium(
+              context: context,
+              title: "HSES Training",
+              icon: Icons.menu_book_rounded,
+              enabled: false,
+              onTap: () {},
+            ),
         ],
       ),
     );

@@ -186,7 +186,7 @@ class _AddMemberFormCardState extends State<AddMemberFormCard> {
                       _field(
                         child: DropdownButtonFormField<String>(
                           isExpanded: true,
-                          value: selectedRole,
+                          initialValue: selectedRole,
                           decoration: _input("Role User"),
                           items: [
                             if (userRole == "superadmin")
@@ -212,7 +212,7 @@ class _AddMemberFormCardState extends State<AddMemberFormCard> {
                         _field(
                           child: DropdownButtonFormField<int>(
                             isExpanded: true,
-                            value: selectedSiteId,
+                            initialValue: selectedSiteId,
                             decoration: _input("Site"),
                             items: sites
                                 .map(
@@ -235,7 +235,7 @@ class _AddMemberFormCardState extends State<AddMemberFormCard> {
                       _field(
                         child: DropdownButtonFormField<int>(
                           isExpanded: true,
-                          value: selectedDepartmentId,
+                          initialValue: selectedDepartmentId,
                           decoration: _input("Department"),
                           items: departments
                               .map(

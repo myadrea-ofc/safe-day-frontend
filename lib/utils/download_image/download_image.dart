@@ -1,0 +1,2 @@
+export 'download_image_io.dart'
+    if (dart.library.html) 'download_image_web.dart';

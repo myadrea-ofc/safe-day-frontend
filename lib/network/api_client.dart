@@ -107,6 +107,9 @@ class ApiClient {
   static bool _isHandling401 = false;
 
   static Future<void> _handleUnauthorized(http.Response res) async {
+    // kalau logout manual sedang berjalan, jangan tampilkan popup sesi berakhir
+    if (AuthSession.isManualLogout) return;
+
     // ✅ kalau FCM sedang handle role_changed → skip
     if (FirebaseNotificationService.isHandlingRoleChange) return;
 
@@ -154,8 +157,8 @@ class ApiClient {
       _isHandling401 = true;
       _dialogShown = true;
 
-      final message = (msg != null && msg!.isNotEmpty)
-          ? msg!
+      final message = (msg != null && msg.isNotEmpty)
+          ? msg
           : "Anda tidak punya hak akses.";
 
       WidgetsBinding.instance.addPostFrameCallback((_) async {
@@ -284,8 +287,8 @@ class ApiClient {
     String message = "Sesi Anda Berakhir.\nSilakan login ulang.";
     if (reason == "role_changed") {
       message = "Role akun Anda telah berubah.\nSilakan login ulang.";
-    } else if (msg != null && msg!.isNotEmpty) {
-      message = msg!;
+    } else if (msg != null && msg.isNotEmpty) {
+      message = msg;
     }
 
     // ✅ simpan device_id
@@ -425,7 +428,12 @@ class ApiClient {
 
     final res = await http.get(
       Uri.parse("$_baseUrl$url"),
-      headers: {"Authorization": "Bearer $token", "x-device-id": deviceId},
+      headers: {
+        "Authorization": "Bearer $token",
+        "x-device-id": deviceId,
+        "Accept":
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      },
     );
 
     await _handleUnauthorized(res);

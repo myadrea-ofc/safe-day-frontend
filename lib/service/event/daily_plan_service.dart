@@ -1,10 +1,10 @@
 import 'dart:convert';
-import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:safety_apps/models/daily_plan.dart';
 import 'package:safety_apps/models/events/daily_plan_review.dart';
+import 'package:share_plus/share_plus.dart';
 
 class HSESDailyPlanService {
   static const String baseUrl = "http://safety.borneo.co.id/hses_daily_plan";
@@ -51,7 +51,7 @@ class HSESDailyPlanService {
     required String judul,
     required String subJudul,
     required String deskripsi,
-    File? gambar,
+    XFile? gambar,
     required List<int> siteIds,
     required bool isForAllSites,
   }) async {
@@ -75,8 +75,10 @@ class HSESDailyPlanService {
       request.fields["site_ids"] = jsonEncode(siteIds);
 
       if (gambar != null) {
+        final bytes = await gambar.readAsBytes();
+
         request.files.add(
-          await http.MultipartFile.fromPath("gambar", gambar.path),
+          http.MultipartFile.fromBytes("gambar", bytes, filename: gambar.name),
         );
       }
 
@@ -101,7 +103,7 @@ class HSESDailyPlanService {
     required String judul,
     required String subJudul,
     required String deskripsi,
-    File? gambar,
+    XFile? gambar,
     required List<int> siteIds,
     required bool isForAllSites,
   }) async {
@@ -120,7 +122,11 @@ class HSESDailyPlanService {
       }
 
       if (gambar != null) {
-        req.files.add(await http.MultipartFile.fromPath("gambar", gambar.path));
+        final bytes = await gambar.readAsBytes();
+
+        req.files.add(
+          http.MultipartFile.fromBytes("gambar", bytes, filename: gambar.name),
+        );
       }
 
       final res = await req.send();

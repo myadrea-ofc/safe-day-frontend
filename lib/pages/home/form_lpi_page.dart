@@ -1,20 +1,25 @@
 import 'dart:io';
+import 'dart:typed_data';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:safety_apps/models/dropdown_item.dart';
+import 'package:safety_apps/service/pending/pending_form_helper.dart';
+import 'package:safety_apps/service/pending/retry_submit_helper.dart';
 import 'package:safety_apps/session/auth_session.dart';
-
-import 'package:safety_apps/widgets/dropdown/dropdown_jabatan.dart';
 import 'package:safety_apps/widgets/dropdown/dropdwon_klasifikasi_insiden.dart';
+import 'package:safety_apps/widgets/result/status_pending_dialog.dart';
+import 'package:safety_apps/widgets/search_dropdown.dart';
+import 'package:safety_apps/widgets/submit_loading_dialog.dart';
+import 'package:safety_apps/widgets/validation_error_dialog.dart';
 import '../../service/lpi_service.dart';
 import '../../widgets/label_text.dart';
 import '../../widgets/input/input_field.dart';
 import '../../widgets/date_field.dart';
 import '../../widgets/opsi/opsi_row.dart';
 import '../../widgets/upload_box.dart';
-import '../../widgets/dropdown/dropdown_department.dart';
-import '../../widgets/dropdown/dropdown_perusahaan.dart';
 
 class FormLPIPage extends StatefulWidget {
   @override
@@ -29,21 +34,51 @@ class _FormLPIPageState extends State<FormLPIPage> {
   TextEditingController waktu = TextEditingController();
   TextEditingController jenis_aset_perusahaan = TextEditingController();
   TextEditingController nama_saksi = TextEditingController();
-  TextEditingController jabatan_saksi = TextEditingController();
   TextEditingController kronologi = TextEditingController();
 
-  String? department;
-  String? department_spv;
-  String? department_saksi;
-  String? jabatan_korban;
+  @override
+  void dispose() {
+    nama.dispose();
+    nama_korban.dispose();
+    nama_spv.dispose();
+    tanggal.dispose();
+    waktu.dispose();
+    jenis_aset_perusahaan.dispose();
+    nama_saksi.dispose();
+    kronologi.dispose();
+    _submitProgressText.dispose();
+    super.dispose();
+  }
+
+  DropdownItemModel? selectedDepartment;
+  DropdownItemModel? selectedDepartmentSPV;
+  DropdownItemModel? selectedDepartmentSaksi;
+  DropdownItemModel? selectedPerusahaan;
+  DropdownItemModel? selectedJabatanSaksi;
+  DropdownItemModel? selectedJabatanKorban;
+
+  String? departmentManual;
+  String? departmentSPVManual;
+  String? departmentSaksiManual;
+  String? perusahaanManual;
+  String? jabatanSaksiManual;
+  String? jabatanKorbanManual;
   String? klasifikasi_insiden;
   String? status_lokasi;
-  String? perusahaan;
 
-  File? fileDokumen;
-  List<File> fotoList = [];
+  PlatformFile? fileDokumen;
+  List<XFile> fotoList = [];
+  List<Uint8List> fotoBytesList = [];
 
   bool _isSubmitting = false;
+
+  static const int _maxAutoRetry = 3;
+  static const Duration _submitTimeout = Duration(seconds: 30);
+  static const Duration _retryDelay = Duration(seconds: 1);
+
+  final ValueNotifier<String> _submitProgressText = ValueNotifier(
+    "Mengirim data LPI...",
+  );
 
   static const fNamaPengisi = "Nama Pengisi";
   static const fPerusahaan = "Perusahaan";
@@ -67,28 +102,57 @@ class _FormLPIPageState extends State<FormLPIPage> {
   List<String> _getMissingFields() {
     List<String> missing = [];
     if (nama.text.trim().isEmpty) missing.add(fNamaPengisi);
-    if (perusahaan == null || perusahaan!.isEmpty) missing.add(fPerusahaan);
-    if (department == null || department!.isEmpty) missing.add(fDepartment);
     if (tanggal.text.trim().isEmpty) missing.add(fTanggal);
     if (waktu.text.trim().isEmpty) missing.add(fWaktu);
     if (nama_korban.text.trim().isEmpty) missing.add(fNamaKorban);
-    if (jabatan_korban == null || jabatan_korban!.isEmpty)
-      missing.add(fJabatanKorban);
-    if (nama_spv.text.trim().isEmpty) missing.add(fNamaSpv);
-    if (department_spv == null || department_spv!.isEmpty)
-      missing.add(fDepartmentSpv);
     if (jenis_aset_perusahaan.text.trim().isEmpty) missing.add(fJenisAset);
     if (nama_saksi.text.trim().isEmpty) missing.add(fNamaSaksi);
-    if (jabatan_saksi.text.trim().isEmpty) missing.add(fJabatanSaksi);
-    if (department_saksi == null || department_saksi!.isEmpty)
-      missing.add(fDepartmentSaksi);
+
     if (klasifikasi_insiden == null || klasifikasi_insiden!.isEmpty)
       missing.add(fKlasifikasi);
     if (kronologi.text.trim().isEmpty) missing.add(fKronologi);
     if (status_lokasi == null || status_lokasi!.isEmpty)
       missing.add(fStatusLokasi);
     if (fileDokumen == null) missing.add(fDokumen);
+    if (selectedDepartment == null) {
+      missing.add(fDepartment);
+    } else if (selectedDepartment!.isOther &&
+        (departmentManual == null || departmentManual!.trim().isEmpty)) {
+      missing.add(fDepartment);
+    }
+    if (selectedDepartmentSPV == null) {
+      missing.add(fDepartmentSpv);
+    } else if (selectedDepartmentSPV!.isOther &&
+        (departmentSPVManual == null || departmentSPVManual!.trim().isEmpty)) {
+      missing.add(fDepartmentSpv);
+    }
+    if (selectedDepartmentSaksi == null) {
+      missing.add(fDepartmentSaksi);
+    } else if (selectedDepartmentSaksi!.isOther &&
+        (departmentSaksiManual == null ||
+            departmentSaksiManual!.trim().isEmpty)) {
+      missing.add(fDepartmentSaksi);
+    }
     if (fotoList.isEmpty) missing.add(fFoto);
+    if (selectedPerusahaan == null) {
+      missing.add(fPerusahaan);
+    } else if (selectedPerusahaan!.isOther &&
+        (perusahaanManual == null || perusahaanManual!.trim().isEmpty)) {
+      missing.add(fPerusahaan);
+    }
+    if (selectedJabatanSaksi == null) {
+      missing.add(fJabatanSaksi);
+    } else if (selectedJabatanSaksi!.isOther &&
+        (jabatanSaksiManual == null || jabatanSaksiManual!.trim().isEmpty)) {
+      missing.add(fJabatanSaksi);
+    }
+    if (selectedJabatanKorban == null) {
+      missing.add(fJabatanKorban);
+    } else if (selectedJabatanKorban!.isOther &&
+        (jabatanKorbanManual == null || jabatanKorbanManual!.trim().isEmpty)) {
+      missing.add(fJabatanKorban);
+    }
+    if (nama_spv.text.trim().isEmpty) missing.add(fNamaSpv);
 
     return missing;
   }
@@ -128,12 +192,6 @@ class _FormLPIPageState extends State<FormLPIPage> {
       }
     });
 
-    jabatan_saksi.addListener(() {
-      if (jabatan_saksi.text.trim().isNotEmpty) {
-        _clearMissing(fJabatanSaksi);
-      }
-    });
-
     kronologi.addListener(() {
       if (kronologi.text.trim().isNotEmpty) {
         _clearMissing(fKronologi);
@@ -149,6 +207,87 @@ class _FormLPIPageState extends State<FormLPIPage> {
         _missingFields.remove(field);
       });
     }
+  }
+
+  Map<String, dynamic> _buildLPIPayload() {
+    return {
+      'nama': nama.text,
+      'tanggal': tanggal.text,
+      'waktu': waktu.text,
+      'department': selectedDepartment?.isOther == true
+          ? (departmentManual ?? "")
+          : (selectedDepartment?.label ?? ""),
+      'perusahaan': selectedPerusahaan?.isOther == true
+          ? (perusahaanManual ?? "")
+          : (selectedPerusahaan?.label ?? ""),
+      'namaKorban': nama_korban.text,
+      'jabatanKorban': selectedJabatanKorban?.isOther == true
+          ? (jabatanKorbanManual ?? "")
+          : (selectedJabatanKorban?.label ?? ""),
+      'namaSpv': nama_spv.text,
+      'departmentSpv': selectedDepartmentSPV?.isOther == true
+          ? (departmentSPVManual ?? "")
+          : (selectedDepartmentSPV?.label ?? ""),
+      'jenisAsetPerusahaan': jenis_aset_perusahaan.text,
+      'namaSaksi': nama_saksi.text,
+      'jabatanSaksi': selectedJabatanSaksi?.isOther == true
+          ? (jabatanSaksiManual ?? "")
+          : (selectedJabatanSaksi?.label ?? ""),
+      'departmentSaksi': selectedDepartmentSaksi?.isOther == true
+          ? (departmentSaksiManual ?? "")
+          : (selectedDepartmentSaksi?.label ?? ""),
+      'klasifikasiInsiden': klasifikasi_insiden ?? "",
+      'kronologi': kronologi.text,
+      'statusLokasi': status_lokasi ?? "",
+    };
+  }
+
+  List<String> _buildLPIFilePaths() {
+    if (kIsWeb) return [];
+
+    return [
+      if (fileDokumen?.path != null) fileDokumen!.path!,
+      ...fotoList.map((e) => e.path),
+    ];
+  }
+
+  Future<bool> _submitLPIOnce(Map<String, dynamic> payload) async {
+    return await LPIService.submitLPI(
+      nama: (payload['nama'] ?? '').toString().trim(),
+      tanggal: (payload['tanggal'] ?? '').toString().trim(),
+      waktu: (payload['waktu'] ?? '').toString().trim(),
+      department: (payload['department'] ?? '').toString().trim(),
+      perusahaan: (payload['perusahaan'] ?? '').toString().trim(),
+      namaKorban: (payload['namaKorban'] ?? '').toString().trim(),
+      jabatanKorban: (payload['jabatanKorban'] ?? '').toString().trim(),
+      namaSpv: (payload['namaSpv'] ?? '').toString().trim(),
+      departmentSpv: (payload['departmentSpv'] ?? '').toString().trim(),
+      jenisAsetPerusahaan: (payload['jenisAsetPerusahaan'] ?? '')
+          .toString()
+          .trim(),
+      namaSaksi: (payload['namaSaksi'] ?? '').toString().trim(),
+      jabatanSaksi: (payload['jabatanSaksi'] ?? '').toString().trim(),
+      departmentSaksi: (payload['departmentSaksi'] ?? '').toString().trim(),
+      klasifikasiInsiden: (payload['klasifikasiInsiden'] ?? '')
+          .toString()
+          .trim(),
+      kronologi: (payload['kronologi'] ?? '').toString().trim(),
+      statusLokasi: (payload['statusLokasi'] ?? '').toString().trim(),
+
+      filePath: kIsWeb ? null : fileDokumen?.path,
+      fileBytes: kIsWeb ? fileDokumen?.bytes : null,
+      fileName: fileDokumen?.name,
+
+      fotoPaths: kIsWeb ? [] : fotoList.map((e) => e.path).toList(),
+      fotoBytesList: kIsWeb ? fotoBytesList : [],
+      fotoNames: fotoList.map((e) => e.name).toList(),
+    ).timeout(
+      _submitTimeout,
+      onTimeout: () {
+        debugPrint("SUBMIT LPI TIMEOUT");
+        return false;
+      },
+    );
   }
 
   @override
@@ -271,26 +410,32 @@ class _FormLPIPageState extends State<FormLPIPage> {
                     readOnly: true,
                   ),
 
-                  LabelText(
-                    fPerusahaan,
+                  SearchableMasterDropdown(
+                    label: fPerusahaan,
+                    hint: "Pilih Perusahaan",
+                    endpoint: "master/perusahaan",
+                    selectedValue: selectedPerusahaan,
                     showError: _missingFields.contains(fPerusahaan),
-                  ),
-                  DropdownPerusahaan(
-                    value: perusahaan,
-                    onChanged: (v) {
-                      setState(() => perusahaan = v);
+                    onChanged: (selected, manualValue) {
+                      setState(() {
+                        selectedPerusahaan = selected;
+                        perusahaanManual = manualValue;
+                      });
                       _clearMissing(fPerusahaan);
                     },
                   ),
 
-                  LabelText(
-                    fDepartment,
+                  SearchableMasterDropdown(
+                    label: fDepartment,
+                    hint: "Pilih Department",
+                    endpoint: "master/department",
+                    selectedValue: selectedDepartment,
                     showError: _missingFields.contains(fDepartment),
-                  ),
-                  DropdownDepartment(
-                    value: department,
-                    onChanged: (v) {
-                      setState(() => department = v);
+                    onChanged: (selected, manualValue) {
+                      setState(() {
+                        selectedDepartment = selected;
+                        departmentManual = manualValue;
+                      });
                       _clearMissing(fDepartment);
                     },
                   ),
@@ -328,14 +473,17 @@ class _FormLPIPageState extends State<FormLPIPage> {
                     },
                   ),
 
-                  LabelText(
-                    fJabatanKorban,
+                  SearchableMasterDropdown(
+                    label: fJabatanKorban,
+                    hint: "Pilih Jabatan Korban",
+                    endpoint: "master/jabatan",
+                    selectedValue: selectedJabatanKorban,
                     showError: _missingFields.contains(fJabatanKorban),
-                  ),
-                  DropdownJabatan(
-                    value: jabatan_korban,
-                    onChanged: (v) {
-                      setState(() => jabatan_korban = v);
+                    onChanged: (selected, manualValue) {
+                      setState(() {
+                        selectedJabatanKorban = selected;
+                        jabatanKorbanManual = manualValue;
+                      });
                       _clearMissing(fJabatanKorban);
                     },
                   ),
@@ -354,14 +502,17 @@ class _FormLPIPageState extends State<FormLPIPage> {
                     },
                   ),
 
-                  LabelText(
-                    fDepartmentSpv,
+                  SearchableMasterDropdown(
+                    label: fDepartmentSpv,
+                    hint: "Pilih Department SPV",
+                    endpoint: "master/department",
+                    selectedValue: selectedDepartmentSPV,
                     showError: _missingFields.contains(fDepartmentSpv),
-                  ),
-                  DropdownDepartment(
-                    value: department_spv,
-                    onChanged: (v) {
-                      setState(() => department_spv = v);
+                    onChanged: (selected, manualValue) {
+                      setState(() {
+                        selectedDepartmentSPV = selected;
+                        departmentSPVManual = manualValue;
+                      });
                       _clearMissing(fDepartmentSpv);
                     },
                   ),
@@ -394,40 +545,48 @@ class _FormLPIPageState extends State<FormLPIPage> {
                     },
                   ),
 
-                  LabelText(
-                    fJabatanSaksi,
+                  SearchableMasterDropdown(
+                    label: fJabatanSaksi,
+                    hint: "Pilih Jabatan Saksi",
+                    endpoint: "master/jabatan",
+                    selectedValue: selectedJabatanSaksi,
                     showError: _missingFields.contains(fJabatanSaksi),
-                  ),
-                  InputField(
-                    controller: jabatan_saksi,
-                    hint: "Masukkan jabatan saksi",
-                    onChanged: (v) {
-                      if (v.trim().isNotEmpty) {
-                        _clearMissing(fJabatanSaksi);
-                      }
+                    onChanged: (selected, manualValue) {
+                      setState(() {
+                        selectedJabatanSaksi = selected;
+                        jabatanSaksiManual = manualValue;
+                      });
+                      _clearMissing(fJabatanSaksi);
                     },
                   ),
 
-                  LabelText(
-                    fDepartmentSaksi,
+                  SearchableMasterDropdown(
+                    label: fDepartmentSaksi,
+                    hint: "Pilih Department Saksi",
+                    endpoint: "master/department",
+                    selectedValue: selectedDepartmentSaksi,
                     showError: _missingFields.contains(fDepartmentSaksi),
-                  ),
-                  DropdownDepartment(
-                    value: department_saksi,
-                    onChanged: (v) {
-                      setState(() => department_saksi = v);
+                    onChanged: (selected, manualValue) {
+                      setState(() {
+                        selectedDepartmentSaksi = selected;
+                        departmentSaksiManual = manualValue;
+                      });
                       _clearMissing(fDepartmentSaksi);
                     },
                   ),
 
-                  LabelText(
-                    fKlasifikasi,
-                    showError: _missingFields.contains(fKlasifikasi),
-                  ),
                   DropdownKlasifikasiInsiden(
                     value: klasifikasi_insiden,
-                    onChanged: (v) {
-                      setState(() => klasifikasi_insiden = v);
+                    showError: _missingFields.contains(fKlasifikasi),
+                    onChanged: (selectedValue, manualValue) {
+                      setState(() {
+                        if (selectedValue != "Lainnya") {
+                          klasifikasi_insiden = selectedValue;
+                        } else {
+                          klasifikasi_insiden = manualValue;
+                        }
+                      });
+
                       _clearMissing(fKlasifikasi);
                     },
                   ),
@@ -453,7 +612,7 @@ class _FormLPIPageState extends State<FormLPIPage> {
                   UploadBox(
                     text: fileDokumen == null
                         ? "Pilih Dokumen"
-                        : fileDokumen!.path.split("/").last,
+                        : fileDokumen!.name,
                     icon: Icons.attach_file_rounded,
                     onTap: pickFile,
                   ),
@@ -468,12 +627,19 @@ class _FormLPIPageState extends State<FormLPIPage> {
                           children: [
                             ClipRRect(
                               borderRadius: BorderRadius.circular(12),
-                              child: Image.file(
-                                e.value,
-                                width: 90,
-                                height: 90,
-                                fit: BoxFit.cover,
-                              ),
+                              child: kIsWeb
+                                  ? Image.memory(
+                                      fotoBytesList[e.key],
+                                      width: 90,
+                                      height: 90,
+                                      fit: BoxFit.cover,
+                                    )
+                                  : Image.file(
+                                      File(e.value.path),
+                                      width: 90,
+                                      height: 90,
+                                      fit: BoxFit.cover,
+                                    ),
                             ),
                             Positioned(
                               top: -6,
@@ -483,6 +649,9 @@ class _FormLPIPageState extends State<FormLPIPage> {
                                 onPressed: () {
                                   setState(() {
                                     fotoList.removeAt(e.key);
+                                    if (kIsWeb) {
+                                      fotoBytesList.removeAt(e.key);
+                                    }
                                   });
                                 },
                               ),
@@ -618,9 +787,9 @@ class _FormLPIPageState extends State<FormLPIPage> {
 
   void pickFoto() async {
     final picker = ImagePicker();
-    final List<XFile>? images = await picker.pickMultiImage();
+    final List<XFile> images = await picker.pickMultiImage();
 
-    if (images == null) return;
+    if (images.isEmpty) return;
 
     if (fotoList.length + images.length > 5) {
       ScaffoldMessenger.of(
@@ -629,16 +798,26 @@ class _FormLPIPageState extends State<FormLPIPage> {
       return;
     }
 
-    setState(() {
-      fotoList.addAll(images.map((e) => File(e.path)));
-    });
-    _clearMissing(fTanggal);
-    setState(() {});
+    if (kIsWeb) {
+      final bytes = await Future.wait(images.map((e) => e.readAsBytes()));
+
+      setState(() {
+        fotoList.addAll(images);
+        fotoBytesList.addAll(bytes);
+      });
+    } else {
+      setState(() {
+        fotoList.addAll(images);
+      });
+    }
+
+    _clearMissing(fFoto);
   }
 
   void pickFile() async {
     FilePickerResult? r = await FilePicker.platform.pickFiles(
       type: FileType.custom,
+      withData: kIsWeb,
       allowedExtensions: [
         'pdf',
         'doc',
@@ -651,11 +830,10 @@ class _FormLPIPageState extends State<FormLPIPage> {
       ],
     );
 
-    if (r != null && r.files.single.path != null) {
+    if (r != null) {
       setState(() {
-        fileDokumen = File(r.files.single.path!);
-        _clearMissing(fTanggal);
-        setState(() {});
+        fileDokumen = r.files.single;
+        _clearMissing(fDokumen);
       });
     }
   }
@@ -670,246 +848,95 @@ class _FormLPIPageState extends State<FormLPIPage> {
     });
 
     if (missing.isNotEmpty) {
-      showDialog(
+      await ValidationErrorDialog.show(
         context: context,
-        builder: (_) => Dialog(
-          backgroundColor: Colors.transparent,
-          insetPadding: const EdgeInsets.symmetric(horizontal: 24),
-          child: Container(
-            padding: const EdgeInsets.all(22),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(22),
-              boxShadow: [
-                BoxShadow(
-                  blurRadius: 20,
-                  color: Colors.black.withOpacity(0.15),
-                  offset: const Offset(0, 6),
-                ),
-              ],
-            ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 14,
-                  ),
-                  decoration: BoxDecoration(
-                    gradient: const LinearGradient(
-                      colors: [Color(0xffFF5F6D), Color(0xffFF7A45)],
-                    ),
-                    borderRadius: BorderRadius.circular(14),
-                  ),
-                  child: Row(
-                    children: const [
-                      Icon(
-                        Icons.warning_amber_rounded,
-                        color: Colors.white,
-                        size: 26,
-                      ),
-                      SizedBox(width: 10),
-                      Expanded(
-                        child: Text(
-                          "Data Belum Lengkap",
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontWeight: FontWeight.bold,
-                            fontSize: 16,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-
-                const SizedBox(height: 18),
-
-                const Text(
-                  "Field berikut masih kosong:",
-                  style: TextStyle(
-                    fontWeight: FontWeight.w600,
-                    color: Colors.black87,
-                  ),
-                ),
-
-                const SizedBox(height: 10),
-
-                Container(
-                  constraints: const BoxConstraints(maxHeight: 200),
-                  child: SingleChildScrollView(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: missing
-                          .map(
-                            (e) => Padding(
-                              padding: const EdgeInsets.symmetric(vertical: 3),
-                              child: Row(
-                                children: [
-                                  const Icon(
-                                    Icons.circle,
-                                    size: 7,
-                                    color: Colors.redAccent,
-                                  ),
-                                  const SizedBox(width: 8),
-                                  Expanded(
-                                    child: Text(
-                                      e,
-                                      style: const TextStyle(fontSize: 14),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          )
-                          .toList(),
-                    ),
-                  ),
-                ),
-
-                const SizedBox(height: 20),
-
-                SizedBox(
-                  width: double.infinity,
-                  child: ElevatedButton(
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xffFF6A55),
-                      padding: const EdgeInsets.symmetric(vertical: 14),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                    ),
-                    onPressed: () => Navigator.pop(context),
-                    child: const Text(
-                      "Mengerti",
-                      style: TextStyle(color: Colors.white),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
+        missingFields: missing,
       );
-
       return;
     }
 
-    showDialog(
+    setState(() {
+      _isSubmitting = true;
+    });
+
+    _submitProgressText.value = "Mengirim data LPI...";
+
+    SubmitLoadingDialog.show(
       context: context,
-      barrierDismissible: false,
-      builder: (ctx) {
-        return Dialog(
-          backgroundColor: Colors.white,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(16),
-          ),
-          child: Padding(
-            padding: const EdgeInsets.all(20),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: const [
-                CircularProgressIndicator(),
-                SizedBox(width: 20),
-                Text("Mengirim data LPI..."),
-              ],
-            ),
-          ),
-        );
-      },
+      messageNotifier: _submitProgressText,
     );
+
+    final payload = _buildLPIPayload();
+    final filePaths = _buildLPIFilePaths();
 
     bool ok = false;
+    bool savedToPending = false;
 
     try {
-      ok = await LPIService.submitLPI(
-        nama: nama.text,
-        perusahaan: perusahaan ?? "",
-        department: department ?? "",
-        tanggal: tanggal.text,
-        waktu: waktu.text,
-        namaKorban: nama_korban.text,
-        jabatanKorban: jabatan_korban ?? "",
-        namaSpv: nama_spv.text,
-        departmentSpv: department_spv ?? "",
-        jenisAsetPerusahaan: jenis_aset_perusahaan.text,
-        namaSaksi: nama_saksi.text,
-        jabatanSaksi: jabatan_saksi.text,
-        departmentSaksi: department_saksi ?? "",
-        klasifikasiInsiden: klasifikasi_insiden ?? "",
-        kronologi: kronologi.text,
-        statusLokasi: status_lokasi ?? "",
-        filePath: fileDokumen?.path,
-        fotoPaths: fotoList.map((e) => e.path).toList(),
+      ok = await RetrySubmitHelper.run(
+        maxRetry: _maxAutoRetry,
+        retryDelay: _retryDelay,
+        onProgress: (attempt, maxRetry) {
+          if (!mounted) return;
+
+          _submitProgressText.value = attempt == 1
+              ? "Mengirim data LPI..."
+              : "Mengirim ulang... percobaan $attempt dari $maxRetry";
+        },
+        action: () => _submitLPIOnce(payload),
       );
+
+      if (!ok) {
+        await PendingFormHelper.saveLPI(payload: payload, filePaths: filePaths);
+        savedToPending = true;
+      }
     } catch (_) {
-      ok = false;
+      await PendingFormHelper.saveLPI(payload: payload, filePaths: filePaths);
+      savedToPending = true;
     }
+
     if (!mounted) return;
 
-    setState(() => _isSubmitting = false);
-    Navigator.pop(context);
+    SubmitLoadingDialog.close(context);
 
-    showStatusDialog(
-      context: context,
-      success: ok,
-      onDone: () {
-        Navigator.pop(context);
+    setState(() {
+      _isSubmitting = false;
+    });
 
-        if (ok) {
+    _submitProgressText.value = "Mengirim data LPI...";
+
+    if (ok) {
+      StatusDialog.show(
+        context: context,
+        type: StatusDialogType.success,
+        title: "Berhasil Terkirim",
+        message: "Data berhasil dikirim ke server.",
+        onDone: () {
           Navigator.pop(context);
-        }
-      },
-    );
+          Navigator.pop(context);
+        },
+      );
+    } else if (savedToPending) {
+      StatusDialog.show(
+        context: context,
+        type: StatusDialogType.warning,
+        title: "Tersimpan di Pending",
+        message:
+            "Pengiriman gagal setelah beberapa kali percobaan. Data disimpan di Pending Submission.",
+        onDone: () {
+          Navigator.pop(context);
+        },
+      );
+    } else {
+      StatusDialog.show(
+        context: context,
+        type: StatusDialogType.error,
+        title: "Gagal Terkirim",
+        message: "Data gagal dikirim.",
+        onDone: () {
+          Navigator.pop(context);
+        },
+      );
+    }
   }
-}
-
-void showStatusDialog({
-  required BuildContext context,
-  required bool success,
-  required VoidCallback onDone,
-}) {
-  showDialog(
-    context: context,
-    barrierDismissible: false,
-    builder: (_) => AlertDialog(
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-      contentPadding: const EdgeInsets.symmetric(vertical: 28),
-      content: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(
-            success ? Icons.check_circle_rounded : Icons.cancel_rounded,
-            size: 80,
-            color: success ? Colors.green : Colors.red,
-          ),
-          const SizedBox(height: 16),
-          Text(
-            success ? "Berhasil Terkirim" : "Gagal Terkirim",
-            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            success ? "Data LPI berhasil dikirim" : "Data LPI Belum Lengkap",
-            style: const TextStyle(color: Colors.black54),
-          ),
-          const SizedBox(height: 22),
-          SizedBox(
-            width: 120,
-            child: ElevatedButton(
-              style: ElevatedButton.styleFrom(
-                backgroundColor: success ? Colors.green : Colors.redAccent,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(14),
-                ),
-              ),
-              onPressed: onDone,
-              child: Text("OK", style: TextStyle(color: Colors.white)),
-            ),
-          ),
-        ],
-      ),
-    ),
-  );
 }

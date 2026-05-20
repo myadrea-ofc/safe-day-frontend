@@ -1,4 +1,7 @@
 import 'dart:convert';
+import 'dart:typed_data';
+
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:http_parser/http_parser.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -20,7 +23,11 @@ class P5MService {
     required String siapKerja,
     required String statusHariKerja,
     required String umpanBalik,
+
     String? fotoPath,
+
+    Uint8List? fotoBytes,
+    String? fotoName,
   }) async {
     final token = await _storage.read(key: "jwt_token");
     final deviceId = await _storage.read(key: "device_id");
@@ -30,6 +37,7 @@ class P5MService {
     }
 
     final request = http.MultipartRequest("POST", Uri.parse(baseUrl));
+
     request.headers.addAll({
       "Authorization": "Bearer $token",
       "x-device-id": deviceId,
@@ -49,18 +57,36 @@ class P5MService {
       "umpan_balik": umpanBalik,
     });
 
-    if (fotoPath != null && fotoPath.isNotEmpty) {
-      request.files.add(
-        await http.MultipartFile.fromPath(
-          "foto",
-          fotoPath,
-          contentType: MediaType("image", "jpeg"),
-        ),
-      );
+    if (kIsWeb) {
+      if (fotoBytes != null && fotoBytes.isNotEmpty) {
+        request.files.add(
+          http.MultipartFile.fromBytes(
+            "foto",
+            fotoBytes,
+            filename: fotoName ?? "foto_p5m.jpg",
+            contentType: MediaType("image", "jpeg"),
+          ),
+        );
+      }
+    } else {
+      if (fotoPath != null && fotoPath.isNotEmpty) {
+        request.files.add(
+          await http.MultipartFile.fromPath(
+            "foto",
+            fotoPath,
+            contentType: MediaType("image", "jpeg"),
+          ),
+        );
+      }
     }
 
     final response = await request.send();
-    return response.statusCode == 200;
+    final responseBody = await response.stream.bytesToString();
+
+    debugPrint("SUBMIT P5M STATUS: ${response.statusCode}");
+    debugPrint("SUBMIT P5M RESPONSE: $responseBody");
+
+    return response.statusCode == 200 || response.statusCode == 201;
   }
 
   static Future<List<P5MModel>> fetchP5M() async {

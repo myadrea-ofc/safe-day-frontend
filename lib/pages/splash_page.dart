@@ -1,7 +1,6 @@
-// ================= SPLASH PAGE =================
 import 'dart:convert';
 import 'dart:io';
-
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
@@ -27,12 +26,12 @@ class _SplashPageState extends State<SplashPage> with TickerProviderStateMixin {
   late Animation<Alignment> _endAlign;
 
   bool _checkingSession = true;
+  bool _navigated = false;
 
   @override
   void initState() {
     super.initState();
 
-    // ===== LOGO ANIMATION =====
     _logoController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 1200),
@@ -47,7 +46,6 @@ class _SplashPageState extends State<SplashPage> with TickerProviderStateMixin {
       end: 1,
     ).animate(CurvedAnimation(parent: _logoController, curve: Curves.easeIn));
 
-    // ===== BACKGROUND ANIMATION =====
     _bgController = AnimationController(
       vsync: this,
       duration: const Duration(seconds: 4),
@@ -65,97 +63,199 @@ class _SplashPageState extends State<SplashPage> with TickerProviderStateMixin {
 
     _logoController.forward();
 
-    // 🔥 TUNGGU FRAME PERTAMA, BARU CEK SESSION
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _checkSession();
     });
   }
 
-  Future<bool> isNetworkReady() async {
+  Future<void> _checkSession() async {
     try {
-      final result = await InternetAddress.lookup('safety.borneo.co.id');
-      return result.isNotEmpty && result[0].rawAddress.isNotEmpty;
-    } catch (_) {
-      return false;
+      await _doCheckSession().timeout(const Duration(seconds: 18));
+    } catch (e) {
+      debugPrint("❌ Splash fatal/timeout: $e");
+      await _clearSessionKeepDeviceId();
+      AuthSession.clear();
+      _goToLogin();
     }
   }
 
-  Future<void> _checkSession() async {
+  Future<void> _doCheckSession() async {
+    debugPrint("🚀 Splash: start checkSession");
+    if (!mounted) return;
+
     setState(() => _checkingSession = true);
 
     await Future.delayed(const Duration(seconds: 2));
+    debugPrint("⏳ Splash: delay selesai");
 
     final token = await _storage.read(key: "jwt_token");
     final deviceId = await _storage.read(key: "device_id");
 
+    debugPrint("🔑 Token exists: ${token != null && token.isNotEmpty}");
+    debugPrint(
+      "📱 DeviceId exists: ${deviceId != null && deviceId.isNotEmpty}",
+    );
+
     if (!mounted) return;
-
-    bool ready = false;
-    int tries = 0;
-    while (!ready && tries < 5) {
-      ready = await isNetworkReady();
-      if (!ready) {
-        tries++;
-        await Future.delayed(const Duration(seconds: 1));
-      }
-    }
-
-    if (!ready) {
-      if (!mounted) return;
-
-      await _showAutoCloseDialog(
-        context,
-        title: "Koneksi Bermasalah",
-        message: "Koneksi internet belum siap.\nPeriksa jaringan Anda.",
-      );
-      if (!mounted) return;
-
-      _goToLogin();
-      return;
-    }
 
     if (token == null ||
         token.isEmpty ||
         deviceId == null ||
         deviceId.isEmpty) {
+      debugPrint("➡️ Splash exit: token/device kosong");
       _goToLogin();
       return;
     }
 
-    // Ambil semua data dari storage
+    final networkReady = await _waitForNetworkReadiness();
+    if (!networkReady) {
+      debugPrint("➡️ Splash exit: network not ready");
+      await _clearSessionKeepDeviceId();
+      AuthSession.clear();
+      _goToLogin();
+      return;
+    }
+
+    final profile = await _readStoredProfile();
+    if (!profile.isValid) {
+      debugPrint("➡️ Splash exit: profile storage tidak valid");
+      await _clearSessionKeepDeviceId();
+      AuthSession.clear();
+      _goToLogin();
+      return;
+    }
+
+    final isSessionValid = await _validateSessionToBackend(
+      token: token,
+      deviceId: deviceId,
+    );
+
+    if (!isSessionValid) {
+      debugPrint("➡️ Splash exit: backend session invalid");
+      await _clearSessionKeepDeviceId();
+      AuthSession.clear();
+      _goToLogin();
+      return;
+    }
+
+    // Baru restore AuthSession setelah backend valid
+    AuthSession.token = token;
+    AuthSession.name = profile.name!;
+    AuthSession.role = profile.role!;
+    AuthSession.userId = profile.userId!;
+    AuthSession.siteId = profile.siteId!;
+    AuthSession.departmentId = profile.departmentId!;
+    AuthSession.siteName = profile.site!;
+    AuthSession.departmentName = profile.department!;
+    AuthSession.email = profile.email;
+    AuthSession.employeeId = profile.employeeId;
+    AuthSession.markReady();
+
+    debugPrint("➡️ Splash exit: go home");
+
+    if (!mounted || _navigated) return;
+
+    _navigated = true;
+    Navigator.pushAndRemoveUntil(
+      context,
+      MaterialPageRoute(
+        builder: (_) => HomePage(
+          name: profile.name!,
+          role: profile.role!,
+          site: profile.site!,
+          department: profile.department!,
+        ),
+      ),
+      (route) => false,
+    );
+  }
+
+  Future<bool> _waitForNetworkReadiness() async {
+    if (kIsWeb) {
+      debugPrint("🌐 Network readiness skipped on web");
+      return true;
+    }
+
+    for (int tries = 1; tries <= 5; tries++) {
+      debugPrint("🌐 Network check try: $tries");
+      final ready = await isNetworkReady();
+      debugPrint("🌐 Network ready: $ready");
+
+      if (ready) return true;
+
+      await Future.delayed(const Duration(seconds: 1));
+    }
+
+    return false;
+  }
+
+  Future<bool> isNetworkReady() async {
+    if (kIsWeb) {
+      debugPrint("🌐 Network check skipped on web");
+      return true;
+    }
+
+    try {
+      final result = await InternetAddress.lookup(
+        'safety.borneo.co.id',
+      ).timeout(const Duration(seconds: 3));
+
+      return result.isNotEmpty && result.first.rawAddress.isNotEmpty;
+    } catch (e) {
+      debugPrint("🌐 Network lookup failed: $e");
+      return false;
+    }
+  }
+
+  Future<_StoredProfile> _readStoredProfile() async {
+    debugPrint("📦 Reading stored profile");
+
     final name = await _storage.read(key: "user_name");
     final role = await _storage.read(key: "user_role");
     final site = await _storage.read(key: "site_name");
     final department = await _storage.read(key: "department_name");
+    final email = await _storage.read(key: "user_email");
+    final employeeId = await _storage.read(key: "employee_id");
     final userIdStr = await _storage.read(key: "user_id");
     final siteIdStr = await _storage.read(key: "site_id");
     final departmentIdStr = await _storage.read(key: "department_id");
 
-    if (name == null ||
-        role == null ||
-        site == null ||
-        department == null ||
-        userIdStr == null ||
-        siteIdStr == null ||
-        departmentIdStr == null) {
-      final savedDeviceId = await _storage.read(key: "device_id");
-      await _storage.deleteAll();
-      if (savedDeviceId != null) {
-        await _storage.write(key: "device_id", value: savedDeviceId);
-      }
-      _goToLogin();
-      return;
-    }
+    final parsedUserId = int.tryParse(userIdStr ?? '');
+    final parsedSiteId = int.tryParse(siteIdStr ?? '');
+    final parsedDepartmentId = int.tryParse(departmentIdStr ?? '');
 
-    // Restore AuthSession
-    AuthSession.token = token;
-    AuthSession.role = role;
-    AuthSession.userId = int.parse(userIdStr);
-    AuthSession.siteId = int.parse(siteIdStr);
-    AuthSession.departmentId = int.parse(departmentIdStr);
+    final hasRequiredFields =
+        (name?.isNotEmpty ?? false) &&
+        (role?.isNotEmpty ?? false) &&
+        (site?.isNotEmpty ?? false) &&
+        (department?.isNotEmpty ?? false) &&
+        parsedUserId != null &&
+        parsedSiteId != null &&
+        parsedDepartmentId != null;
 
-    // VALIDASI SESSION KE BACKEND
+    debugPrint("📦 Stored profile valid: $hasRequiredFields");
+
+    return _StoredProfile(
+      name: name,
+      role: role,
+      site: site,
+      department: department,
+      email: email,
+      employeeId: employeeId,
+      userId: parsedUserId,
+      siteId: parsedSiteId,
+      departmentId: parsedDepartmentId,
+      isValid: hasRequiredFields,
+    );
+  }
+
+  Future<bool> _validateSessionToBackend({
+    required String token,
+    required String deviceId,
+  }) async {
     try {
+      debugPrint("🛰️ Validate session to backend: start");
+
       final res = await _safeGet(
         Uri.parse("http://safety.borneo.co.id/validate-session"),
         {
@@ -165,124 +265,38 @@ class _SplashPageState extends State<SplashPage> with TickerProviderStateMixin {
         },
       );
 
+      debugPrint("🛰️ Validate session status: ${res?.statusCode}");
+
       if (res == null || res.statusCode != 200) {
-        throw Exception("Network not ready");
+        return false;
       }
 
       final data = jsonDecode(res.body);
-      if (data["valid"] != true) {
-        await _storage.deleteAll();
-        AuthSession.clear();
-        _goToLogin();
-        return;
-      }
-    } catch (_) {
-      await _storage.deleteAll();
-      AuthSession.clear();
-      _goToLogin();
-      return;
-    }
+      final valid = data["valid"] == true;
 
-    // SEMUA OK → LANJUT KE HOME
-    if (!mounted) return;
-    Navigator.pushAndRemoveUntil(
-      context,
-      MaterialPageRoute(
-        builder: (_) => HomePage(
-          name: name,
-          role: role,
-          site: site,
-          department: department,
-        ),
-      ),
-      (route) => false,
-    );
+      debugPrint("🛰️ Validate session result: $valid");
+      return valid;
+    } catch (e) {
+      debugPrint("🛰️ Validate session error: $e");
+      return false;
+    }
   }
 
-  Future<void> _showAutoCloseDialog(
-    BuildContext context, {
-    required String title,
-    required String message,
-  }) async {
-    await showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (ctx) {
-        // ambil navigator sekali
-        final nav = Navigator.of(ctx, rootNavigator: true);
+  Future<void> _clearSessionKeepDeviceId() async {
+    final savedDeviceId = await _storage.read(key: "device_id");
 
-        Future.delayed(const Duration(seconds: 2), () {
-          try {
-            if (nav.canPop()) nav.pop();
-          } catch (_) {}
-        });
+    await _storage.deleteAll();
 
-        return Dialog(
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(22),
-          ),
-          backgroundColor: Colors.white,
-          elevation: 6,
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(22, 22, 22, 22),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Container(
-                  width: 60,
-                  height: 60,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    gradient: const LinearGradient(
-                      colors: [Color(0xff1d63ff), Color(0xff4fa9ff)],
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                    ),
-                    boxShadow: [
-                      BoxShadow(
-                        color: const Color(0xff1d63ff).withOpacity(0.35),
-                        blurRadius: 16,
-                        offset: const Offset(0, 6),
-                      ),
-                    ],
-                  ),
-                  child: const Icon(
-                    Icons.wifi_off_rounded,
-                    color: Colors.white,
-                    size: 30,
-                  ),
-                ),
-                const SizedBox(height: 16),
-                Text(
-                  title,
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(
-                    fontSize: 17,
-                    fontWeight: FontWeight.w900,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  message,
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(
-                    fontSize: 14,
-                    color: Colors.black54,
-                    height: 1.4,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        );
-      },
-    );
+    if (savedDeviceId != null && savedDeviceId.isNotEmpty) {
+      await _storage.write(key: "device_id", value: savedDeviceId);
+    }
   }
 
   void _goToLogin() {
-    if (!mounted) return;
-    setState(() => _checkingSession = false);
+    if (!mounted || _navigated) return;
+
+    _navigated = true;
+
     Navigator.pushAndRemoveUntil(
       context,
       MaterialPageRoute(builder: (_) => const LoginPage()),
@@ -293,11 +307,15 @@ class _SplashPageState extends State<SplashPage> with TickerProviderStateMixin {
   Future<http.Response?> _safeGet(Uri uri, Map<String, String> headers) async {
     for (int i = 0; i < 2; i++) {
       try {
+        debugPrint("🌍 GET try ${i + 1}: $uri");
+
         final res = await http
             .get(uri, headers: headers)
             .timeout(const Duration(seconds: 5));
+
         return res;
-      } catch (_) {
+      } catch (e) {
+        debugPrint("🌍 GET failed try ${i + 1}: $e");
         await Future.delayed(const Duration(milliseconds: 800));
       }
     }
@@ -349,4 +367,30 @@ class _SplashPageState extends State<SplashPage> with TickerProviderStateMixin {
       ),
     );
   }
+}
+
+class _StoredProfile {
+  final String? name;
+  final String? role;
+  final String? site;
+  final String? department;
+  final String? email;
+  final String? employeeId;
+  final int? userId;
+  final int? siteId;
+  final int? departmentId;
+  final bool isValid;
+
+  const _StoredProfile({
+    required this.name,
+    required this.role,
+    required this.site,
+    required this.department,
+    required this.email,
+    required this.employeeId,
+    required this.userId,
+    required this.siteId,
+    required this.departmentId,
+    required this.isValid,
+  });
 }

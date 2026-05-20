@@ -14,7 +14,9 @@ class OpsiRow3Ltna extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MediaQuery(
-      data: MediaQuery.of(context).copyWith(textScaleFactor: 0.75),
+      data: MediaQuery.of(
+        context,
+      ).copyWith(textScaler: TextScaler.linear(0.75)),
       child: Row(
         children: [
           Expanded(

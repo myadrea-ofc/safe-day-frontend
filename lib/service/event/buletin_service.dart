@@ -1,10 +1,10 @@
 import 'dart:convert';
-import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:safety_apps/models/buletin.dart';
 import 'package:safety_apps/models/events/buletin_review.dart';
+import 'package:share_plus/share_plus.dart';
 
 class HSESBuletinService {
   static const String baseUrl = "http://safety.borneo.co.id/hses_buletin";
@@ -69,7 +69,7 @@ class HSESBuletinService {
     required String judul,
     required String subJudul,
     required String deskripsi,
-    File? gambar,
+    XFile? gambar,
     required List<int> siteIds,
     required bool isForAllSites,
   }) async {
@@ -94,7 +94,11 @@ class HSESBuletinService {
       }
 
       if (gambar != null) {
-        req.files.add(await http.MultipartFile.fromPath("gambar", gambar.path));
+        final bytes = await gambar.readAsBytes();
+
+        req.files.add(
+          http.MultipartFile.fromBytes("gambar", bytes, filename: gambar.name),
+        );
       }
 
       final res = await req.send();
@@ -118,7 +122,7 @@ class HSESBuletinService {
     required String judul,
     required String subJudul,
     required String deskripsi,
-    File? gambar,
+    XFile? gambar,
     required List<int> siteIds,
     required bool isForAllSites,
   }) async {
@@ -138,7 +142,11 @@ class HSESBuletinService {
       }
 
       if (gambar != null) {
-        req.files.add(await http.MultipartFile.fromPath("gambar", gambar.path));
+        final bytes = await gambar.readAsBytes();
+
+        req.files.add(
+          http.MultipartFile.fromBytes("gambar", bytes, filename: gambar.name),
+        );
       }
 
       final res = await req.send();

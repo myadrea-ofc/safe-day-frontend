@@ -1,5 +1,9 @@
 import 'dart:convert';
+import 'dart:typed_data';
+
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
+import 'package:http_parser/http_parser.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:safety_apps/models/p2h/p2h_water_truck.dart';
 
@@ -7,7 +11,6 @@ class P2HWaterTruckService {
   static const _storage = FlutterSecureStorage();
   static const String baseUrl = "http://safety.borneo.co.id/p2h_water_truck";
 
-  // ===================== POST =====================
   static Future<bool> submitP2HWaterTruck({
     required String nama,
     required String nrp,
@@ -71,7 +74,12 @@ class P2HWaterTruckService {
 
     required String statusSiap,
 
+    // Mobile/Desktop
     List<String>? filePaths,
+
+    // Web
+    List<Uint8List>? fileBytesList,
+    List<String>? fileNames,
   }) async {
     final token = await _storage.read(key: "jwt_token");
     final deviceId = await _storage.read(key: "device_id");
@@ -154,19 +162,47 @@ class P2HWaterTruckService {
         "status_siap": statusSiap,
       });
 
-      if (filePaths != null && filePaths.isNotEmpty) {
-        int i = 1;
-        for (final path in filePaths.take(5)) {
-          print("Uploading file $i/${filePaths.length}");
-          request.files.add(
-            await http.MultipartFile.fromPath(
-              "files",
-              path,
-              filename: path.split('/').last,
-              contentType: http.MediaType("image", "jpeg"),
-            ),
-          );
-          i++;
+      if (kIsWeb) {
+        if (fileBytesList != null && fileBytesList.isNotEmpty) {
+          for (int i = 0; i < fileBytesList.take(5).length; i++) {
+            final bytes = fileBytesList[i];
+
+            if (bytes.isEmpty) continue;
+
+            final name = fileNames != null && i < fileNames.length
+                ? fileNames[i]
+                : "file_${i + 1}.jpg";
+
+            request.files.add(
+              http.MultipartFile.fromBytes(
+                "files",
+                bytes,
+                filename: name,
+                contentType: _getMediaType(name),
+              ),
+            );
+          }
+        }
+      } else {
+        if (filePaths != null && filePaths.isNotEmpty) {
+          int i = 1;
+
+          for (final path in filePaths.take(5)) {
+            if (path.isEmpty) continue;
+
+            debugPrint("Uploading P2H WATER TRUCK file $i/${filePaths.length}");
+
+            request.files.add(
+              await http.MultipartFile.fromPath(
+                "files",
+                path,
+                filename: path.split('/').last,
+                contentType: _getMediaType(path),
+              ),
+            );
+
+            i++;
+          }
         }
       }
 
@@ -176,23 +212,68 @@ class P2HWaterTruckService {
 
       final response = await http.Response.fromStream(streamedResponse);
 
+      debugPrint("SUBMIT P2H WATER TRUCK STATUS: ${response.statusCode}");
+      debugPrint("SUBMIT P2H WATER TRUCK RESPONSE: ${response.body}");
+
       if (response.statusCode == 200 || response.statusCode == 201) {
         final body = jsonDecode(response.body);
-        return body["success"] == true;
-      } else {
-        print("Submit P2H WATER TRUCK Failed: ${response.statusCode}");
-        print(response.body);
-        return false;
+
+        if (body is Map && body.containsKey("success")) {
+          return body["success"] == true;
+        }
+
+        return true;
       }
+
+      return false;
     } catch (e) {
-      print("Submit P2H WATER TRUCK Exception: $e");
+      debugPrint("Submit P2H WATER TRUCK Exception: $e");
       return false;
     } finally {
       client.close();
     }
   }
 
-  // ===================== GET =====================
+  static MediaType _getMediaType(String fileName) {
+    final lower = fileName.toLowerCase();
+
+    if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) {
+      return MediaType("image", "jpeg");
+    }
+
+    if (lower.endsWith(".png")) {
+      return MediaType("image", "png");
+    }
+
+    if (lower.endsWith(".pdf")) {
+      return MediaType("application", "pdf");
+    }
+
+    if (lower.endsWith(".doc")) {
+      return MediaType("application", "msword");
+    }
+
+    if (lower.endsWith(".docx")) {
+      return MediaType(
+        "application",
+        "vnd.openxmlformats-officedocument.wordprocessingml.document",
+      );
+    }
+
+    if (lower.endsWith(".xls")) {
+      return MediaType("application", "vnd.ms-excel");
+    }
+
+    if (lower.endsWith(".xlsx")) {
+      return MediaType(
+        "application",
+        "vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      );
+    }
+
+    return MediaType("application", "octet-stream");
+  }
+
   static Future<List<P2HWaterTruckModel>> fetchP2HWaterTruck() async {
     final token = await _storage.read(key: "jwt_token");
     final deviceId = await _storage.read(key: "device_id");
@@ -212,7 +293,7 @@ class P2HWaterTruckService {
       final List data = jsonDecode(res.body);
       return data.map((e) => P2HWaterTruckModel.fromJson(e)).toList();
     } catch (e) {
-      print("Error Fetch P2H WATER TRUCK: $e");
+      debugPrint("Error Fetch P2H WATER TRUCK: $e");
       return [];
     }
   }

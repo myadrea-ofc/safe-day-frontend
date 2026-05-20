@@ -519,7 +519,7 @@ class _ChangeRolePageState extends State<ChangeRolePage> {
                               child: DropdownButtonFormField<int>(
                                 isExpanded: true,
                                 decoration: _input("Site"),
-                                value: selectedSiteId,
+                                initialValue: selectedSiteId,
                                 items: sites
                                     .map(
                                       (s) => DropdownMenuItem<int>(
@@ -538,7 +538,7 @@ class _ChangeRolePageState extends State<ChangeRolePage> {
                             child: DropdownButtonFormField<int>(
                               isExpanded: true,
                               decoration: _input("Department"),
-                              value: selectedDepartmentId,
+                              initialValue: selectedDepartmentId,
                               items: departments
                                   .map(
                                     (d) => DropdownMenuItem<int>(
@@ -577,7 +577,7 @@ class _ChangeRolePageState extends State<ChangeRolePage> {
                             child: DropdownButtonFormField<String>(
                               isExpanded: true,
                               decoration: _input("Role Baru"),
-                              value: selectedRole,
+                              initialValue: selectedRole,
                               items: [
                                 const DropdownMenuItem(
                                   value: "member",
