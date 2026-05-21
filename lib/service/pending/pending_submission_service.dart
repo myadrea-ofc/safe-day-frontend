@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
@@ -57,10 +58,10 @@ class PendingSubmissionService {
 
   static Future<List<PendingSubmissionEntity>> getAll() async {
     final box = await _getBox();
-
     final items = box.values
+        .whereType<Map>()
         .map(
-          (e) => PendingSubmissionEntity.fromMap(Map<dynamic, dynamic>.from(e)),
+          (e) => PendingSubmissionEntity.fromMap(Map<String, dynamic>.from(e)),
         )
         .toList();
 
@@ -71,9 +72,9 @@ class PendingSubmissionService {
   static Future<PendingSubmissionEntity?> getById(String id) async {
     final box = await _getBox();
     final raw = box.get(id);
-    if (raw == null) return null;
+    if (raw is! Map) return null;
 
-    return PendingSubmissionEntity.fromMap(Map<dynamic, dynamic>.from(raw));
+    return PendingSubmissionEntity.fromMap(Map<String, dynamic>.from(raw));
   }
 
   static Future<void> save({
@@ -86,10 +87,12 @@ class PendingSubmissionService {
     final box = await _getBox();
     final id = _uuid.v4();
 
-    final copiedFiles = await _copyFilesToAppDir(
-      submissionId: id,
-      originalPaths: originalFilePaths,
-    );
+    final copiedFiles = kIsWeb
+        ? originalFilePaths
+        : await _copyFilesToAppDir(
+            submissionId: id,
+            originalPaths: originalFilePaths,
+          );
 
     final entity = PendingSubmissionEntity(
       id: id,
@@ -110,17 +113,20 @@ class PendingSubmissionService {
     final box = await _getBox();
     final existing = await getById(id);
 
-    if (existing != null) {
+    if (existing != null && !kIsWeb) {
       for (final path in existing.localFiles) {
         final file = File(path);
+
         if (await file.exists()) {
           await file.delete();
         }
       }
 
       final dir = await _submissionDirectory(id);
+
       if (await dir.exists()) {
         final children = dir.listSync();
+
         if (children.isEmpty) {
           await dir.delete(recursive: true);
         }
@@ -162,6 +168,10 @@ class PendingSubmissionService {
     required String submissionId,
     required List<String> originalPaths,
   }) async {
+    if (kIsWeb) {
+      return originalPaths;
+    }
+
     final result = <String>[];
     final targetDir = await _submissionDirectory(submissionId);
 
@@ -171,15 +181,19 @@ class PendingSubmissionService {
 
     for (int i = 0; i < originalPaths.length; i++) {
       final originalPath = originalPaths[i];
+
       if (originalPath.trim().isEmpty) continue;
 
       final source = File(originalPath);
+
       if (!await source.exists()) continue;
 
       final ext = p.extension(originalPath);
+
       final targetPath = p.join(targetDir.path, 'file_${i + 1}$ext');
 
       final copied = await source.copy(targetPath);
+
       result.add(copied.path);
     }
 
@@ -187,7 +201,12 @@ class PendingSubmissionService {
   }
 
   static Future<Directory> _submissionDirectory(String submissionId) async {
+    if (kIsWeb) {
+      throw UnsupportedError('Directory access is not supported on web');
+    }
+
     final appDir = await getApplicationDocumentsDirectory();
+
     return Directory(
       p.join(
         appDir.path,
@@ -202,11 +221,14 @@ class PendingSubmissionService {
     final box = await _getBox();
     final items = await getAll();
 
-    for (final item in items) {
-      for (final path in item.localFiles) {
-        final file = File(path);
-        if (await file.exists()) {
-          await file.delete();
+    if (!kIsWeb) {
+      for (final item in items) {
+        for (final path in item.localFiles) {
+          final file = File(path);
+
+          if (await file.exists()) {
+            await file.delete();
+          }
         }
       }
     }
